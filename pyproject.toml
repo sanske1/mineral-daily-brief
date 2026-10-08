@@ -1,0 +1,20 @@
+[project]
+name = "mineral-daily-brief"
+version = "0.2.0"
+description = "矿权日报 Agent — 3 个 FastMCP server + LangGraph 两节点编排"
+requires-python = ">=3.10"
+dependencies = [
+    # MCP：三个 server 用 FastMCP 封装；Agent 侧加载工具也用它的 Client
+    "fastmcp>=4.0",
+    # 编排：LangGraph 两节点（agent + toolnode）
+    "langgraph>=1.0",
+    "langchain-openai>=1.0",
+    # 三个 server 的取数依赖
+    "httpx>=0.27",
+    "pymupdf>=1.24",
+    "pdfplumber>=0.11",
+    "python-dotenv>=1.0",
+]
+
+[tool.uv]
+package = false

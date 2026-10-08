@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>矿权日报</title>
+<style>
+  :root{
+    --ground:#E9ECEA; --panel:#FBFCFB; --recess:#F1F3F1;
+    --rule:#CBD3CE; --rule-soft:#DFE5E1;
+    --ink:#18211E; --muted:#64716C; --faint:#8B968F;
+    --accent:#2C5F8A; --up:#BE3B26; --down:#1E6B4E;
+    --mono:"Cascadia Mono","Consolas",ui-monospace,monospace;
+    --display:"Bahnschrift","DIN Alternate","Arial Narrow",sans-serif;
+    --body:"Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--ground); color:var(--ink);
+    font:14px/1.65 var(--body);
+    display:flex; flex-direction:column;
+    -webkit-font-smoothing:antialiased;
+  }
+  button,input,textarea{font:inherit; color:inherit}
+
+  /* ---------- 页眉：一条横规，不用卡片 ---------- */
+  header{
+    display:flex; align-items:baseline; gap:14px;
+    padding:14px 20px 12px; border-bottom:1px solid var(--rule);
+  }
+  header h1{
+    margin:0; font-family:var(--display); font-size:22px; font-weight:600;
+    letter-spacing:.01em;
+  }
+  header .sub{font-size:12.5px; color:var(--muted)}
+  header .spacer{flex:1}
+  header .dot{
+    width:7px; height:7px; border-radius:50%; background:var(--down);
+    display:inline-block; margin-right:6px; vertical-align:1px;
+  }
+  header .dot.off{background:var(--up)}
+
+  /* ---------- 两栏：一个容器一道缝，不是两个悬浮圆角卡 ---------- */
+  main{flex:1; display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);
+       min-height:0; margin:16px; border:1px solid var(--rule); border-radius:2px;
+       background:var(--panel); overflow:hidden}
+  .pane{display:flex; flex-direction:column; min-height:0}
+  .pane.data{border-left:1px solid var(--rule); background:var(--recess)}
+
+  /* ---------- 左：对话 ---------- */
+  .log{flex:1; overflow-y:auto; padding:18px 20px 6px; scroll-behavior:smooth}
+  .log::-webkit-scrollbar{width:9px}
+  .log::-webkit-scrollbar-thumb{background:var(--rule); border-radius:9px}
+
+  .turn{margin-bottom:18px}
+  .turn .who{
+    font-family:var(--display); font-size:11.5px; letter-spacing:.08em;
+    color:var(--faint); margin-bottom:5px;
+  }
+  .ask{
+    background:var(--recess); border-left:2px solid var(--rule);
+    padding:8px 12px; font-size:13.5px;
+  }
+  .say{font-size:14px}
+  .say h1,.say h2,.say h3{font-family:var(--display); font-weight:600;
+    font-size:15px; margin:14px 0 6px; letter-spacing:.01em}
+  .say h1{font-size:17px}
+  .say p{margin:0 0 9px; max-width:74ch}
+  .say ul{margin:0 0 9px; padding-left:19px}
+  .say li{margin:2px 0}
+  .say code{font-family:var(--mono); font-size:12.5px;
+    background:var(--recess); padding:1px 4px; border-radius:2px}
+  .say pre{background:var(--recess); border-left:2px solid var(--rule);
+    padding:9px 11px; overflow-x:auto; font-family:var(--mono); font-size:12.5px}
+  .say table{border-collapse:collapse; margin:0 0 10px; font-size:13px}
+  .say th,.say td{border-bottom:1px solid var(--rule-soft); padding:5px 10px 5px 0;
+    text-align:left; vertical-align:top}
+  .say th{font-family:var(--display); font-weight:600; font-size:12px;
+    color:var(--muted); border-bottom-color:var(--rule)}
+  .say strong{font-weight:600}
+  .say a{color:var(--accent)}
+
+  /* ---------- 工具调用轨迹：这一页的记忆点 ---------- */
+  .trace{margin:9px 0 12px; border-left:2px solid var(--rule-soft); padding-left:12px}
+  .call{margin-bottom:7px}
+  .call .head{display:flex; align-items:baseline; gap:8px; font-family:var(--mono); font-size:12.5px}
+  .call .name{color:var(--accent); font-weight:600}
+  .call .args{color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .call .res{color:var(--muted); font-size:12px; padding-left:16px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:70ch}
+  .call .res::before{content:"↳ "; color:var(--faint)}
+  .call.pending .name::after{
+    content:""; display:inline-block; width:5px; height:5px; margin-left:7px;
+    border-radius:50%; background:var(--accent); vertical-align:1px;
+    animation:pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:.25} 50%{opacity:1}}
+  @media (prefers-reduced-motion:reduce){.call.pending .name::after{animation:none; opacity:.7}}
+
+  .composer{border-top:1px solid var(--rule); padding:12px 20px; display:flex; gap:10px}
+  .composer textarea{
+    flex:1; resize:none; height:42px; max-height:130px; padding:10px 12px;
+    border:1px solid var(--rule); border-radius:2px; background:var(--panel);
+    outline:none;
+  }
+  .composer textarea:focus{border-color:var(--accent)}
+  .composer textarea:disabled{background:var(--recess); color:var(--faint); cursor:not-allowed}
+  .composer button{
+    padding:0 18px; border:1px solid var(--accent); background:var(--accent);
+    color:#fff; border-radius:2px; cursor:pointer; font-weight:600;
+  }
+  .composer button:disabled{opacity:.35; cursor:not-allowed}
+  .composer button.ghost{background:none; color:var(--muted); border-color:var(--rule)}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+
+  .empty{color:var(--faint); font-size:13px}
+  .empty b{display:block; color:var(--ink); font-weight:600; margin-bottom:6px}
+  .notice{border-left:2px solid var(--up); padding:8px 12px; background:#FBEDEA;
+    font-size:13px; color:#7B2A1B; margin-bottom:14px}
+  .notice code{font-family:var(--mono); font-size:12.5px}
+
+  /* ---------- 右：数据预览 ---------- */
+  .tabs{display:flex; gap:0; border-bottom:1px solid var(--rule); padding:0 16px}
+  .tabs button{
+    background:none; border:none; border-bottom:2px solid transparent;
+    padding:11px 13px 9px; cursor:pointer; color:var(--muted); font-size:13px;
+  }
+  .tabs button[aria-selected="true"]{color:var(--ink); border-bottom-color:var(--accent);
+    font-weight:600}
+  .view{flex:1; overflow-y:auto; padding:14px 16px}
+  .view::-webkit-scrollbar{width:9px}
+  .view::-webkit-scrollbar-thumb{background:var(--rule); border-radius:9px}
+
+  .stat-row{display:flex; gap:26px; margin-bottom:14px; flex-wrap:wrap}
+  .stat .n{font-family:var(--display); font-size:25px; font-weight:600; line-height:1.1}
+  .stat .k{font-size:12px; color:var(--muted)}
+
+  table.grid{width:100%; border-collapse:collapse; font-size:13px}
+  table.grid th{font-family:var(--display); font-size:11.5px; font-weight:600;
+    color:var(--muted); text-align:left; padding:0 10px 6px 0;
+    border-bottom:1px solid var(--rule)}
+  table.grid td{padding:7px 10px 7px 0; border-bottom:1px solid var(--rule-soft)}
+  table.grid tbody tr{cursor:pointer}
+  table.grid tbody tr:hover td{background:var(--panel)}
+  table.grid tbody tr.sel td{background:#E4EBEF}
+  .num{font-family:var(--mono); text-align:right; white-space:nowrap}
+  .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--muted)}
+
+  .badge{font-family:var(--mono); font-size:11px; padding:1px 5px; border-radius:2px;
+    border:1px solid currentColor; white-space:nowrap}
+  .badge.official{color:var(--down)}
+  .badge.relay{color:#8A6D1F}
+  .badge.substitute{color:var(--up)}
+
+  .spark{margin:14px 0 4px; padding:10px 12px; background:var(--panel);
+    border:1px solid var(--rule-soft); border-radius:2px}
+  .spark .cap{font-size:12px; color:var(--muted); margin-bottom:6px}
+  .spark svg{display:block; width:100%; height:56px}
+
+  .newsrow{padding:9px 0; border-bottom:1px solid var(--rule-soft)}
+  .newsrow a{color:var(--ink); text-decoration:none; font-size:13.5px; font-weight:500}
+  .newsrow a:hover{color:var(--accent)}
+  .newsrow .meta{font-size:11.5px; color:var(--faint); margin-top:2px;
+    font-family:var(--mono)}
+  .srcgroup{margin-bottom:18px}
+  .srcgroup h4{font-family:var(--display); font-size:12px; font-weight:600;
+    color:var(--muted); margin:0 0 7px; letter-spacing:.04em}
+  .src{padding:7px 0; border-bottom:1px solid var(--rule-soft); font-size:13px}
+  .src .nm{font-weight:600}
+  .src .nt{color:var(--muted); font-size:12px; line-height:1.5}
+  .src.dead .nm{color:var(--faint); text-decoration:line-through}
+  .searchrow{display:flex; gap:8px; margin-bottom:12px}
+  .searchrow input{flex:1; padding:7px 10px; border:1px solid var(--rule);
+    border-radius:2px; background:var(--panel); outline:none}
+  .searchrow input:focus{border-color:var(--accent)}
+  .searchrow button{padding:0 14px; border:1px solid var(--rule); background:var(--panel);
+    border-radius:2px; cursor:pointer; color:var(--muted)}
+
+  /* 并排是这个页面的重点，所以断点压到 780px —— 再窄才堆叠成上下 */
+  @media (max-width:780px){
+    main{grid-template-columns:1fr; grid-template-rows:minmax(300px,1fr) minmax(300px,1fr);
+         margin:10px}
+    .pane.data{border-left:none; border-top:1px solid var(--rule)}
+    .say p{max-width:none}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>矿权日报</h1>
+  <div class="sub" id="status"><span class="dot off"></span>连接中…</div>
+  <div class="spacer"></div>
+  <div class="sub" id="model"></div>
+</header>
+
+<main>
+  <!-- 左：对话 -->
+  <section class="pane">
+    <div class="log" id="log">
+      <div class="empty" id="hello">
+        <b>问点什么</b>
+        比如「Pilbara 锂矿的储量和最近锂价怎么样」。<br>
+        Agent 会自己去检索新闻、下载年报抽储量表、查行情，左边会实时显示它调了哪些工具。
+      </div>
+    </div>
+    <form class="composer" id="composer" autocomplete="off">
+      <textarea id="input" placeholder="问一句…" rows="1"></textarea>
+      <button type="submit" id="send">发送</button>
+      <button type="button" class="ghost" id="clear" title="清空对话">清空</button>
+    </form>
+  </section>
+
+  <!-- 右：数据预览 -->
+  <section class="pane data">
+    <nav class="tabs" id="tabs">
+      <button data-v="news" aria-selected="true">新闻库</button>
+      <button data-v="price" aria-selected="false">价格</button>
+      <button data-v="src" aria-selected="false">数据源</button>
+    </nav>
+    <div class="view" id="view"></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* 极小 markdown：先把 HTML 转义掉再套标记，避免把模型输出当 HTML 执行 */
+function md(t){
+  const lines = esc(t).split("\n");
+  let out = [], tbl = [], list = false;
+  const flush = () => { if(list){ out.push("</ul>"); list = false; } };
+  const flushTbl = () => {
+    if(!tbl.length) return;
+    const rows = tbl.filter(r => !/^\s*\|[\s:|-]+\|\s*$/.test(r))
+                     .map(r => r.replace(/^\s*\|/,"").replace(/\|\s*$/,"").split("|").map(c=>c.trim()));
+    if(rows.length){
+      out.push("<table><thead><tr>" + rows[0].map(c=>`<th>${c}</th>`).join("") + "</tr></thead><tbody>");
+      rows.slice(1).forEach(r => out.push("<tr>" + r.map(c=>`<td>${c}</td>`).join("") + "</tr>"));
+      out.push("</tbody></table>");
+    }
+    tbl = [];
+  };
+  for(const ln of lines){
+    if(/^\s*\|.*\|\s*$/.test(ln)){ flush(); tbl.push(ln); continue; }
+    flushTbl();
+    const h = ln.match(/^(#{1,3})\s+(.*)$/);
+    if(h){ flush(); out.push(`<h${h[1].length}>${h[2]}</h${h[1].length}>`); continue; }
+    const li = ln.match(/^\s*[-*]\s+(.*)$/);
+    if(li){ if(!list){ out.push("<ul>"); list = true; } out.push(`<li>${li[1]}</li>`); continue; }
+    flush();
+    out.push(ln.trim() ? `<p>${ln}</p>` : "");
+  }
+  flush(); flushTbl();
+  return out.join("")
+    .replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>")
+    .replace(/`([^`]+)`/g,"<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+
+/* ---------------- 状态 ---------------- */
+async function boot(){
+  try{
+    const s = await (await fetch("/api/status")).json();
+    $("#model").textContent = s.model ? "模型 " + s.model : "";
+    if(s.ready){
+      $("#status").innerHTML = `<span class="dot"></span>就绪 · ${s.tools.length} 个工具`;
+    }else{
+      $("#status").innerHTML = `<span class="dot off"></span>模型未配置`;
+      // 没配密钥时把「问点什么」的邀请撤掉 —— 否则一边邀请提问、一边把输入框禁着，自相矛盾
+      $("#hello")?.remove();
+      $("#log").insertAdjacentHTML("afterbegin",
+        `<div class="notice">${esc(s.error||"模型未就绪")}<br>
+         填好 <code>OPENAI_API_KEY</code> 后重启看左边的对话。右边的数据预览不受影响。</div>`);
+      $("#send").disabled = true; $("#input").disabled = true;
+      $("#input").placeholder = "模型未配置";
+    }
+  }catch(e){
+    $("#status").textContent = "后端没响应";
+  }
+}
+
+/* ---------------- 聊天 ---------------- */
+let busy = false;
+$("#composer").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = $("#input").value.trim();
+  if(!q || busy) return;
+  busy = true; $("#send").disabled = true; $("#input").value = "";
+  $("#hello")?.remove();
+
+  $("#log").insertAdjacentHTML("beforeend",
+    `<div class="turn"><div class="who">你</div><div class="ask">${esc(q)}</div></div>
+     <div class="turn"><div class="who">Agent</div><div class="trace"></div><div class="say"></div></div>`);
+  const turn = $("#log").lastElementChild;
+  const trace = turn.querySelector(".trace"), say = turn.querySelector(".say");
+  const scroll = () => { $("#log").scrollTop = $("#log").scrollHeight; };
+  scroll();
+
+  let lastCall = null;
+  try{
+    const res = await fetch("/api/chat", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({message:q})
+    });
+    const rd = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    while(true){
+      const {done, value} = await rd.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      const parts = buf.split("\n\n"); buf = parts.pop();
+      for(const part of parts){
+        let ev = "message", data = "";
+        for(const line of part.split("\n")){
+          if(line.startsWith("event:")) ev = line.slice(6).trim();
+          else if(line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if(!data) continue;
+        const d = JSON.parse(data);
+        if(ev === "tool_call"){
+          trace.insertAdjacentHTML("beforeend",
+            `<div class="call pending"><div class="head"><span class="name">${esc(d.name)}</span>
+             <span class="args">${esc(d.args)}</span></div></div>`);
+          lastCall = trace.lastElementChild;
+        }else if(ev === "tool_result"){
+          const el = lastCall || trace.lastElementChild;
+          if(el){ el.classList.remove("pending");
+            el.insertAdjacentHTML("beforeend",
+              `<div class="res">${esc((d.preview||"").slice(0,220))}</div>`); }
+          lastCall = null;
+        }else if(ev === "answer"){
+          say.innerHTML = md(d.content);
+        }else if(ev === "error"){
+          trace.insertAdjacentHTML("beforeend",
+            `<div class="call"><div class="head"><span class="args" style="color:var(--up)">
+             ${esc(d.message)}</span></div></div>`);
+        }
+        scroll();
+      }
+    }
+  }catch(err){
+    say.innerHTML = `<p style="color:var(--up)">请求失败：${esc(err.message)}</p>`;
+  }
+  busy = false; $("#send").disabled = false; $("#input").focus();
+  scroll();
+});
+
+$("#input").addEventListener("keydown", e => {
+  if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); $("#composer").requestSubmit(); }
+});
+
+$("#clear").addEventListener("click", async () => {
+  await fetch("/api/reset", {method:"POST"});
+  $("#log").innerHTML = `<div class="empty"><b>已清空</b>可以接着问。</div>`;
+});
+
+/* ---------------- 数据预览 ---------------- */
+let current = "news";
+
+$("#tabs").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  current = b.dataset.v;
+  [...$("#tabs").children].forEach(x => x.setAttribute("aria-selected", x === b));
+  render();
+});
+
+async function render(){
+  const v = $("#view");
+  v.innerHTML = `<div class="empty">读取中…</div>`;
+  if(current === "news") return renderNews();
+  if(current === "price") return renderPrice();
+  return renderSources();
+}
+
+let newsRetry = null;
+
+async function renderNews(q){
+  const r = await (await fetch("/api/news" + (q ? "?q=" + encodeURIComponent(q) : ""))).json();
+
+  // 新环境第一次启动时本地库是空的，后端在后台抓，约 15 秒。
+  // 这时候不该显示「没有命中」——那会让人以为搜不到，其实只是还没抓完。
+  const warming = r.count === 0 && !q;
+  const body = warming
+    ? `<div class="empty"><b>正在首次抓取新闻库</b>约 15 秒，抓完会自动刷新。</div>`
+    : (r.items.map(it => `
+        <div class="newsrow">
+          <a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a>
+          <div class="meta">${esc(it.published)} · ${esc(it.source||"")} ·
+            ${it.full_text ? (it.has_body ? "已抓正文" : "可抓正文") : "仅摘要"}</div>
+        </div>`).join("") || `<div class="empty">没有命中。</div>`);
+
+  $("#view").innerHTML = `
+    <form class="searchrow" id="sr">
+      <input id="sq" placeholder="检索新闻库（支持中英）" value="${esc(q||"")}">
+      <button type="submit">检索</button>
+    </form>
+    ${body}`;
+
+  $("#sr").addEventListener("submit", e => {
+    e.preventDefault(); renderNews($("#sq").value.trim());
+  });
+
+  clearTimeout(newsRetry);
+  if(warming && current === "news") newsRetry = setTimeout(() => renderNews(), 5000);
+}
+
+let priceCache = null, sparkFor = null;
+
+async function renderPrice(){
+  if(!priceCache) priceCache = await (await fetch("/api/overview")).json();
+  const o = priceCache;
+  const cls = p => p > 0 ? "up" : p < 0 ? "down" : "flat";
+  const sign = p => p == null ? "—" : (p > 0 ? "+" : "") + p.toFixed(2) + "%";
+
+  $("#view").innerHTML = `
+    <div class="stat-row">
+      <div class="stat"><div class="n">${o.stats.articles}</div><div class="k">本地新闻</div></div>
+      <div class="stat"><div class="n">${o.stats.with_body}</div><div class="k">已抓正文</div></div>
+      <div class="stat"><div class="n">${esc(o.stats.earliest)}</div><div class="k">最早</div></div>
+    </div>
+    <div id="sparkslot"></div>
+    <table class="grid">
+      <thead><tr><th>品种</th><th>数据源</th><th style="text-align:right">最新价</th>
+        <th style="text-align:right">涨跌</th></tr></thead>
+      <tbody>${o.prices.map(p => p.error
+        ? `<tr><td colspan="4" style="color:var(--faint)">${esc(p.key)} 取数失败</td></tr>`
+        : `<tr data-k="${esc(p.key)}">
+             <td>${esc(p.name)}<div class="meta" style="font-size:11px;color:var(--faint)">${esc(p.date||"")}</div></td>
+             <td><span class="badge ${esc(p.tier)}">${{official:"官方",relay:"转载",substitute:"替代"}[p.tier]||p.tier}</span></td>
+             <td class="num">${p.price == null ? "—" : p.price.toLocaleString()} <span style="color:var(--faint)">${esc(p.unit||"")}</span></td>
+             <td class="num ${cls(p.change_pct)}">${sign(p.change_pct)}</td>
+           </tr>`).join("")}</tbody>
+    </table>`;
+
+  $("#view").querySelectorAll("tbody tr[data-k]").forEach(tr => {
+    tr.addEventListener("click", () => showSpark(tr.dataset.k, tr));
+  });
+}
+
+async function showSpark(key, tr){
+  $("#view").querySelectorAll("tr").forEach(x => x.classList.remove("sel"));
+  tr.classList.add("sel");
+  const slot = $("#sparkslot");
+  slot.innerHTML = `<div class="empty" style="margin-bottom:10px">读取走势…</div>`;
+  const t = await (await fetch("/api/trend?commodity=" + encodeURIComponent(key))).json();
+  const s = t.series;
+  if(!s || s.length < 2){ slot.innerHTML = `<div class="empty">没有走势数据。</div>`; return; }
+  const w = 560, h = 56, min = Math.min(...s), max = Math.max(...s), span = (max - min) || 1;
+  const pts = s.map((v,i) => [i/(s.length-1)*w, h - (v-min)/span*(h-8) - 4]);
+  const d = pts.map((p,i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  const up = t.change_pct >= 0;
+  slot.innerHTML = `
+    <div class="spark">
+      <div class="cap">${esc(t.name||key)} 近 30 个交易日 ·
+        <span class="${up?"up":"down"}">${t.change_pct>0?"+":""}${(t.change_pct??0).toFixed(2)}%</span> ·
+        ${min.toLocaleString()} – ${max.toLocaleString()} ${esc(t.unit||"")}
+        <span class="badge ${esc(t.tier)}" style="margin-left:6px">${{official:"官方直连",relay:"转载源"}[t.tier]||t.tier}</span>
+      </div>
+      <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+        <path d="${d}" fill="none" stroke="var(--${up?"up":"down"})" stroke-width="1.5"
+          stroke-linejoin="round"/>
+      </svg>
+    </div>`;
+}
+
+async function renderSources(){
+  const o = priceCache || (priceCache = await (await fetch("/api/overview")).json());
+  const groups = {};
+  o.sources.available.forEach(s => (groups[s.tier] ||= []).push(s));
+  const label = o.sources.tiers;
+  $("#view").innerHTML = `
+    ${["official","relay","substitute"].filter(t => groups[t]).map(t => `
+      <div class="srcgroup">
+        <h4>${esc(label[t]||t)}</h4>
+        ${groups[t].map(s => `<div class="src"><div class="nm">${esc(s.name)}</div>
+          <div class="nt">${esc(s.note)}</div></div>`).join("")}
+      </div>`).join("")}
+    <div class="srcgroup">
+      <h4>实测拿不到（评估过，有明确原因）</h4>
+      ${o.sources.unavailable.map(s => `<div class="src dead"><div class="nm">${esc(s.name)}</div>
+        <div class="nt">${esc(s.note)}</div></div>`).join("")}
+    </div>`;
+}
+
+boot(); render();
+</script>
+</body>
+</html>

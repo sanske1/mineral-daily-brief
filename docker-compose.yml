@@ -1,0 +1,75 @@
+# 三种用法：
+#
+# 1) 起网页（最常用）—— 浏览器开 http://localhost:8000
+#      cp .env.example .env        # 填模型密钥
+#      docker compose up -d web
+#
+# 2) 命令行聊天：
+#      docker compose run --rm agent
+#
+# 3) 用 GHCR 上拉下来的镜像（不用本地构建）：
+#      echo "MDB_IMAGE=ghcr.io/你的用户名/仓库名:latest" > .env.docker
+#      docker compose --env-file .env.docker up -d web
+#
+# 密钥都是**运行时**注进去的，不在镜像里。
+
+services:
+  # 网页：Agent 聊天 + 数据预览。浏览器开 http://localhost:8000
+  web:
+    image: ${MDB_IMAGE:-mineral-daily-brief:latest}
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - mdb-data:/app/data  # SQLite 库 + HTTP 缓存，容器删了也不丢
+    restart: unless-stopped
+
+  # 命令行聊天。用 docker compose run --rm agent 起，/exit 退出。
+  agent:
+    image: ${MDB_IMAGE:-mineral-daily-brief:latest}
+    build: .
+    stdin_open: true        # 交互聊天，必须留 stdin，否则一问就 EOF
+    tty: true
+    env_file:
+      - .env
+    volumes:
+      - mdb-data:/app/data
+    profiles: ["cli"]
+
+  # 下面三个是「把 server 提供给别的 MCP 客户端用」的场景，
+  # 默认不启动（需要显式 docker compose up mining-news ...）。
+  # 网页和命令行聊天都不需要它们 —— agent 会自己把这几个当子进程拉起来。
+  mining-news:
+    image: ${MDB_IMAGE:-mineral-daily-brief:latest}
+    build: .
+    command: ["python", "news_server.py"]
+    stdin_open: true
+    tty: false
+    volumes:
+      - mdb-data:/app/data
+    restart: unless-stopped
+
+  mineral-pdf:
+    image: ${MDB_IMAGE:-mineral-daily-brief:latest}
+    build: .
+    command: ["python", "pdf_server.py"]
+    stdin_open: true
+    tty: false
+    volumes:
+      - mdb-data:/app/data
+    restart: unless-stopped
+
+  lme-price:
+    image: ${MDB_IMAGE:-mineral-daily-brief:latest}
+    build: .
+    command: ["python", "price_server.py"]
+    stdin_open: true
+    tty: false
+    volumes:
+      - mdb-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  mdb-data:

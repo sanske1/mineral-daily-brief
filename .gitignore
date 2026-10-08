@@ -1,0 +1,25 @@
+# 密钥：绝不入库
+.env
+.env.docker
+.env.*
+!.env.example
+
+# 运行时产物
+.venv/
+data/
+out/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 本机绝对路径，换机器要重新生成
+mcp-config.json
+
+# 临时
+*.log
+
+# IDE / 本机调试配置（含绝对路径，换机器没意义）
+.idea/
+.claude/
+.vscode/

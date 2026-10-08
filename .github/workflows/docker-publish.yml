@@ -1,0 +1,60 @@
+name: 构建并推送镜像到 GHCR
+
+# 推到 main（或 master）就构建 latest；打 v* 标签就额外推一个版本号标签；
+# 也可以在 Actions 页面手动触发。
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # 推 GHCR 需要这个
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR 要求镜像名全小写，而 GitHub 用户名/仓库名可能含大写字母。
+      # 直接用 github.repository 会在大写上翻车，所以这里先转成小写。
+      - name: 镜像名转小写
+        id: img
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成标签与元信息
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.img.outputs.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,format=short
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # 只构建 amd64：GitHub 的 runner 是 amd64，加 arm64 要走 QEMU 模拟，
+          # 构建时间会翻好几倍（这个镜像要装 pymupdf / langgraph，本来就慢）。
+          # 要在 Apple Silicon 上原生跑，把下面一行改成：
+          #   platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 用 GitHub Actions 缓存加速重复构建
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

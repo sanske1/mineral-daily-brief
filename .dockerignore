@@ -1,0 +1,35 @@
+# 虚拟环境：镜像里重新装。拷进去会让构建上下文暴涨到几百 MB
+.venv/
+
+# 运行时状态：容器里挂卷，不该打进镜像
+data/
+out/
+
+# 密钥：绝不能进镜像
+.env
+.env.*
+
+# 本机绝对路径，换机器就得重新生成，打进镜像没意义
+mcp-config.json
+
+# 版本管理与 CI / 编辑器配置
+.git/
+.github/
+.gitignore
+.dockerignore
+.claude/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+.pyd
+.pytest_cache/
+
+# 编辑器
+.idea/
+.vscode/
+*.iml
+
+# 文档（镜像里只要那 5 个 .py + pyproject.toml）
+*.md
