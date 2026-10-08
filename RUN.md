@@ -201,8 +201,8 @@ git push -u origin main
 跑完（约 3–5 分钟）在仓库首页右侧 **Packages** 里就能看到镜像，
 地址就是 `ghcr.io/<你的用户名>/<仓库名>:latest`。
 
-> `.gitignore` 已经把 `.env`、`.venv/`、`data/`、`mcp-config.json` 排除了，
-> 不会把密钥和几百 MB 的缓存推上去。`git status` 里如果看到 `.env` 请停下来检查。
+> `.gitignore` 已经把 `.env`、`.venv/`、`data/` 排除了，不会把密钥和几百 MB 的缓存推上去。
+> `git status` 里如果看到 `.env` 请停下来检查。
 
 推 `v*` 标签会额外打一个版本号标签：
 
@@ -214,24 +214,44 @@ git tag v0.2.0 && git push origin v0.2.0
 
 ## 接到 Claude Desktop / Cursor
 
-`mcp-config.json` 已经生成好了，内容是：
+三个 server 都可以单独挂进 MCP 客户端。在客户端配置里加上这一段
+（**合并**进已有的 `mcpServers`，不是覆盖整个文件）：
 
-| server | 脚本 |
-|---|---|
-| `mining-news` | `news_server.py` |
-| `mineral-pdf` | `pdf_server.py` |
-| `lme-price` | `price_server.py` |
+```json
+{
+  "mcpServers": {
+    "mining-news": {
+      "command": "<仓库路径>/.venv/Scripts/python.exe",
+      "args": ["<仓库路径>/news_server.py"],
+      "env": { "PYTHONIOENCODING": "utf-8", "MDB_DATA_DIR": "<仓库路径>/data" }
+    },
+    "mineral-pdf": {
+      "command": "<仓库路径>/.venv/Scripts/python.exe",
+      "args": ["<仓库路径>/pdf_server.py"],
+      "env": { "PYTHONIOENCODING": "utf-8", "MDB_DATA_DIR": "<仓库路径>/data" }
+    },
+    "lme-price": {
+      "command": "<仓库路径>/.venv/Scripts/python.exe",
+      "args": ["<仓库路径>/price_server.py"],
+      "env": { "PYTHONIOENCODING": "utf-8", "MDB_DATA_DIR": "<仓库路径>/data" }
+    }
+  }
+}
+```
 
-把它里面的 `mcpServers` **合并**进客户端配置（不是覆盖整个文件）：
+把 `<仓库路径>` 换成仓库的绝对路径，macOS / Linux 还要把
+`.venv/Scripts/python.exe` 换成 `.venv/bin/python`。
+
+客户端配置文件的位置：
 
 - Windows：`%APPDATA%\Claude\claude_desktop_config.json`
 - macOS：`~/Library/Application Support/Claude/claude_desktop_config.json`
 - Cursor：`~/.cursor/mcp.json`
 
-然后**完全退出并重开**客户端。
+改完**完全退出并重开**客户端。
 
-> ⚠️ `mcp-config.json` 里的路径是**绝对路径**。换机器或挪目录后要手工改这三处
-> （`command` 指向装好依赖的解释器，`args` 指向三个 server 脚本）。
+> 这三个 server 不调用 LLM、不依赖外部服务，所以可以只挂其中一个用，
+> 另外两个不启动也不影响。
 
 ---
 
@@ -310,7 +330,6 @@ mineral-daily-brief/v2/
 ├── agent.py            LangGraph 两节点 + 命令行聊天入口
 ├── web.py              网页后端（复用 agent 的图 + 数据预览接口）
 ├── index.html          网页前端（一页，无构建步骤）
-├── mcp-config.json     MCP 客户端配置（绝对路径，换机器要改）
 ├── Dockerfile / docker-compose.yml
 ├── .github/workflows/docker-publish.yml   推到 main 自动构建并推 GHCR
 ├── pyproject.toml / .env.example / .gitignore / .dockerignore
