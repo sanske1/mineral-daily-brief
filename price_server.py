@@ -97,6 +97,8 @@ COMMODITIES: dict[str, dict] = {
         "currency": "CNY",
         "rollable": ["114.i{yy}{mm}"],
         "aliases": ["铁矿石", "铁矿", "铁", "iron ore", "ironore", "i", "普氏"],
+        # 口径本身就是替代的：用大商所期货顶替题面点名的钢联现货指数（见 cache.SOURCES）
+        "substitute_source": "dce_iron_ore_futures",
     },
     "shfe_nickel": {
         "name_zh": "沪镍",
@@ -248,8 +250,14 @@ def _scale(secid: str, decimals: int | None) -> float:
     return price_scale(secid)
 
 
-def _tier_fields(source_key: str) -> dict[str, Any]:
-    return cache.tier_fields(source_key)
+def _tier_fields(source_key: str, meta: dict | None = None) -> dict[str, Any]:
+    """权威性标签。
+
+    有些品种的**口径**本身就是替代的 —— 铁矿石给的是大商所期货，而题面点名的是钢联现货指数。
+    「替代」说的是这个数不等于用户要的东西，跟经哪个门户取到无关，所以它在东财、新浪、
+    日线任何一条路径上都必须标 substitute，不能被后端的 relay 标签盖掉。
+    """
+    return cache.tier_fields((meta or {}).get("substitute_source") or source_key)
 
 
 def _quote(secid: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -704,7 +712,7 @@ def _cross_check(east: dict, sina: dict, tol: float = 1.0) -> dict:
 
 def _official_payload(key: str, meta: dict, oq: dict, note: str | None) -> dict:
     """把官方报价组装成 get_price 的统一返回体。"""
-    tier = _tier_fields(oq["source_key"])
+    tier = _tier_fields(oq["source_key"], meta)
     return {
         "commodity": key,
         "name_zh": meta["name_zh"],
@@ -813,7 +821,7 @@ def get_price(
                 "source": q["source"],
                 "is_realtime": True,
                 "stale_note": stale,
-                **_tier_fields("eastmoney"),
+                **_tier_fields("eastmoney", meta),
             }
             if cross:
                 out["cross_check"] = cross
@@ -835,7 +843,7 @@ def get_price(
                 "is_realtime": True,
                 "note": "东方财富实时接口对该品种无数据，已改用新浪财经备用源",
                 "source": sq["source"],
-                **_tier_fields("sina_finance"),
+                **_tier_fields("sina_finance", meta),
             }
 
         fallback_reason = "两个实时源都不可用，已改用日线收盘价"
@@ -891,7 +899,7 @@ def get_price(
         "note": note,
         "stale_note": kline_stale,
         "source": "东方财富 push2his 日线",
-        **_tier_fields("eastmoney"),
+        **_tier_fields("eastmoney", meta),
     }
 
 
@@ -985,7 +993,7 @@ def get_trend(
         "source": cache.describe_source(source_key)["name"],
         "secid_used": used,
         "note": note,
-        **_tier_fields(source_key),
+        **_tier_fields(source_key, meta),
     }
 
 

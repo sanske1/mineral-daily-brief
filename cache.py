@@ -104,6 +104,17 @@ SOURCES: dict[str, dict] = {
         "available": True,
         "note": "聚合源，按查询实时取，每查询上限 100 条。只给标题摘要，链接不指向原文，故不提供全文。",
     },
+    "dce_iron_ore_futures": {
+        "tier": TIER_SUBSTITUTE,
+        "name": "大连商品交易所 铁矿石期货",
+        "url": "https://push2.eastmoney.com/api/qt/stock/get",
+        "available": True,
+        "note": (
+            "题面点名的是上海钢联铁矿石**现货指数**（见 mysteel_index，实测拿不到），"
+            "这里给的是大商所铁矿石**期货**价格，经东方财富/新浪转载取得。"
+            "期货含基差与预期，与现货指数**不等价**，引用时必须说明口径。"
+        ),
+    },
     # ---- 实测不可用 ----
     "lme_official": {
         "tier": TIER_OFFICIAL,
