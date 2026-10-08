@@ -131,29 +131,8 @@ def _install_llm(state, cfg: dict) -> None:
     """
     llm = _build_llm(cfg)
     state.graph = agent.build_graph(llm, state.tools)
-    # 不绑工具的图，给寒暄类轮次用（见 is_chitchat）
-    state.chat_graph = agent.build_graph(llm, [])
     state.model = llm.model_name
     state.config = cfg
-
-
-# 纯打招呼 / 纯客套。**只匹配整句就是问候的**，所以「你好，顺便查下铜价」不会被误判。
-_CHITCHAT_RE = re.compile(
-    r"^(你好|您好|哈喽|嗨|在吗|早上好|中午好|晚上好|谢谢|多谢|感谢|辛苦了|"
-    r"hi|hello|hey|yo|thanks|thank you|ok|okay|好的|收到)[\s!！。.~～,，、?？]*$",
-    re.I,
-)
-
-
-def is_chitchat(text: str) -> bool:
-    """这句是不是「不需要任何外部数据」的寒暄。
-
-    为什么要做这道确定性判断，而不是只靠提示词：实测模型会被上文带偏 ——
-    上一轮在查铁矿石走势，这一轮只说「你好」，它又去调了一遍 get_trend(铁矿石)。
-    提示词里写了规则也压不住，所以干脆让这类消息走**不绑工具的图**，
-    从机制上杜绝工具调用。
-    """
-    return bool(_CHITCHAT_RE.match((text or "").strip()))
 
 
 def _fresh_history() -> list:
@@ -225,7 +204,6 @@ async def lifespan(app: Starlette):
     # **没有密钥也要正常启动** —— 否则「拉镜像就跑起来」这条就断了。
     # 有配置就装上模型，没有就把状态置成「待配置」，页面上给一个填写表单。
     app.state.graph = None
-    app.state.chat_graph = None
     app.state.model = None
     app.state.config = None
     cfg = _load_config()
@@ -311,10 +289,10 @@ async def config(request):
 
 
 async def chat(request):
-    """SSE 流：把 LangGraph 两个节点的产出实时推给前端。
+    """SSE 流：把 LangGraph 各节点的产出实时推给前端。
 
-    agent 节点产出 AIMessage（要么带 tool_calls，要么是最终回答），
-    tools 节点产出 ToolMessage。据此转成四种事件。
+    intent 节点只改状态不发消息；agent 节点产出 AIMessage（要么带 tool_calls，
+    要么是最终回答）；tools 节点产出 ToolMessage。据此转成几种事件。
     """
     from langchain_core.messages import HumanMessage
 
@@ -341,16 +319,15 @@ async def chat(request):
             }
             return
 
-        # 寒暄类走不绑工具的图 —— 上一轮在查铁矿石时，这一轮说「你好」
-        # 模型会以为要继续更新那份数据，提示词压不住。见 is_chitchat()。
-        graph = s.chat_graph if is_chitchat(question) else s.graph
         final_text = ""
+        produced = []  # 本轮新产生的消息
         async with s.lock:
             s.history.append(HumanMessage(question))
             try:
-                async for chunk in graph.astream({"messages": s.history}, stream_mode="updates"):
+                async for chunk in s.graph.astream({"messages": s.history}, stream_mode="updates"):
                     for node, update in chunk.items():
                         for m in update.get("messages", []):
+                            produced.append(m)
                             if node == "agent":
                                 for tc in getattr(m, "tool_calls", None) or []:
                                     yield {
@@ -379,6 +356,11 @@ async def chat(request):
                                 }
                     # 让出控制权，事件才会即时到达浏览器
                     await asyncio.sleep(0)
+
+                # 把本轮产生的消息（含 agent 的回答、工具结果）写回历史。
+                # 早先只 append 用户消息 —— 模型看到的是一串没有回答的提问，
+                # 多轮对话因此严重退化（它会以为前面几轮都没答过）。
+                s.history.extend(produced)
 
                 # 回答长得像简报就存档（按时间 + 主题命名），并告诉前端去刷新「简报」页
                 if looks_like_brief(final_text, question):

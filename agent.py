@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -176,7 +177,9 @@ def make_tool(client: Client, tool) -> StructuredTool:
     闭包持有 client —— 所以 client 必须活到整场对话结束，工具调用时连接还在。
     """
     props = (getattr(tool, "input_schema", None) or {}).get("properties") or {}
-    array_params = {k for k, v in props.items() if v.get("type") == "array"}
+    # ⚠️ 这里也要用 _json_type_of：和 _args_schema 是同一个 anyOf 坑，
+    # 直接 v.get("type") 对可选参数永远拿到 None，归一化就成了死代码。
+    array_params = {k for k, v in props.items() if _json_type_of(v) == "array"}
 
     async def call(**kwargs):
         # 数组参数被写成字符串时补一次归一化，别让它带进 MCP 层
@@ -199,16 +202,113 @@ def make_tool(client: Client, tool) -> StructuredTool:
     )
 
 
+# 纯打招呼 / 纯客套。**只匹配整句就是问候的**，所以「你好，顺便查下铜价」不会被误判。
+_CHITCHAT_RE = re.compile(
+    r"^(你好|您好|哈喽|嗨|在吗|早上好|中午好|晚上好|谢谢|多谢|感谢|辛苦了|"
+    r"hi|hello|hey|yo|thanks|thank you|ok|okay|好的|收到)[\s!！。.~～,，、?？]*$",
+    re.I,
+)
+
+
+def is_chitchat(text: str) -> bool:
+    return bool(_CHITCHAT_RE.match((text or "").strip()))
+
+
+INTENT_SYSTEM = """你在做「意图改写」，不是回答问题。看完最近几轮对话和用户最新一句话，只输出一个 JSON：
+
+{"needs_data": true 或 false, "rewritten": "改写后的一句话"}
+
+needs_data —— 这句话需要外部数据吗？
+  true  ：要价格、要新闻、要储量、要简报，或让查某个品种/公司/项目
+  false ：打招呼、闲聊、问你能力、让你解释概念
+
+rewritten —— 把用户最新这句话改写成**一句自包含的请求**：
+  · 指代词还原：「它」「这个」「那家」→ 上文说的实际对象
+  · 省略补全：上文在问铁矿石，这轮只说「再算 60 天」→ 补成「铁矿石近 60 天走势」
+  · 本来就自包含 → 原样返回；寒暄类也原样返回
+
+只输出 JSON。不要解释，不要代码块。"""
+
+
+class AgentState(MessagesState):
+    """比 MessagesState 多两个字段：意图判断的结果。
+
+    注意 intent 的结果**不写进 messages**，只在 agent 节点里临时用 ——
+    否则每轮都会往历史里塞一条内部消息。
+    """
+
+    needs_data: bool
+    rewritten: str
+
+
+def _parse_intent(text: str) -> dict:
+    """从模型输出里抠 JSON。容忍 ``` 包裹和前后多余的话。"""
+    t = re.sub(r"```(?:json)?", "", (text or "").strip()).strip()
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i:
+        return {}
+    try:
+        d = json.loads(t[i: j + 1])
+    except json.JSONDecodeError:
+        return {}
+    return {
+        "needs_data": bool(d.get("needs_data", True)),
+        "rewritten": str(d.get("rewritten") or "").strip(),
+    }
+
+
+async def _judge_intent(llm: ChatOpenAI, messages: list) -> dict:
+    """判断意图 + 改写输入。
+
+    判不出来时一律按「需要数据」走 —— 宁可多调一次工具，
+    也不要因为误判成寒暄而答不出用户真正要的东西。
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    last_user = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+    if last_user is None:
+        return {"needs_data": True, "rewritten": ""}
+    # 明确是纯问候就别再花一次模型调用
+    if is_chitchat(last_user.content):
+        return {"needs_data": False, "rewritten": last_user.content}
+    try:
+        # 只喂最近几轮：改写需要上文来还原指代词，但不需要整段历史
+        r = await llm.ainvoke(
+            [SystemMessage(content=INTENT_SYSTEM), *messages[-8:]],
+            max_tokens=220,
+            temperature=0,
+        )
+        return _parse_intent(r.content) or {"needs_data": True, "rewritten": ""}
+    except Exception:  # noqa: BLE001 - 意图判断失败不该拖垮整轮
+        return {"needs_data": True, "rewritten": ""}
+
+
 def build_graph(llm: ChatOpenAI, tools: list[StructuredTool]):
-    """两个节点：agent（调模型）+ tools（ToolNode 执行工具）。"""
-    from langchain_core.messages import AIMessage, HumanMessage
+    """三个节点：intent（判断意图 + 改写输入）→ agent（调模型）→ tools（执行工具）。
 
-    llm_with_tools = llm.bind_tools(tools)
+    intent 节点是后加的：原来只有 agent + tools，模型在连续对话里会被上文带偏 ——
+    上一轮问过铁矿石走势，这一轮只说「你好」，它又去调一遍 get_trend(铁矿石)。
+    光在提示词里写「打招呼别调工具」压不住，得在流程上先判一次意图。
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
 
-    async def agent_node(state: MessagesState):  # noqa: D401
-        msgs = state["messages"]
+    llm_with_tools = llm.bind_tools(tools) if tools else llm
+
+    async def intent_node(state: AgentState):
+        d = await _judge_intent(llm, state["messages"])
+        return {"needs_data": d["needs_data"], "rewritten": d.get("rewritten") or ""}
+
+    async def agent_node(state: AgentState):
+        msgs = list(state["messages"])
+        # 用改写后的请求替换最后一条用户消息。只影响本次调用，不写回 state。
+        rw = state.get("rewritten") or ""
+        if rw and msgs and isinstance(msgs[-1], HumanMessage) and rw != msgs[-1].content:
+            msgs = [*msgs[:-1], HumanMessage(content=rw)]
+
+        # 判断为「不需要数据」时不绑工具 —— 从机制上杜绝工具调用
+        model = llm_with_tools if state.get("needs_data", True) else llm
         try:
-            return {"messages": [await llm_with_tools.ainvoke(msgs)]}
+            return {"messages": [await model.ainvoke(msgs)]}
         except Exception as exc:  # noqa: BLE001
             # 模型把工具参数写错格式时，报错发生在**响应解析阶段**（还没进 ToolNode），
             # ToolNode 的 handle_tool_errors 兜不住，整轮会直接死掉、连回答都没有。
@@ -221,7 +321,7 @@ def build_graph(llm: ChatOpenAI, tools: list[StructuredTool]):
                         "请重新调用同一工具，严格按参数类型传值。"
                     ),
                 ]
-                return {"messages": [await llm_with_tools.ainvoke(nudged)]}
+                return {"messages": [await model.ainvoke(nudged)]}
             except Exception:
                 # 重试也失败，说明多半**不是**「参数格式」问题（密钥无效、网络不通、
                 # 请求头非法都会走到这里）。把原始错误原样抛出去，让用户看到真正的原因。
@@ -229,21 +329,21 @@ def build_graph(llm: ChatOpenAI, tools: list[StructuredTool]):
                 # 排查时被结结实实带偏过一次。
                 raise exc
 
-    def route(state: MessagesState):
+    def route(state: AgentState):
         """模型这一轮调工具了就去 tools，否则收尾。"""
         last = state["messages"][-1]
         return "tools" if getattr(last, "tool_calls", None) else END
 
-    graph = StateGraph(MessagesState)
+    graph = StateGraph(AgentState)
+    graph.add_node("intent", intent_node)
     graph.add_node("agent", agent_node)
-    graph.add_edge(START, "agent")
+    graph.add_edge(START, "intent")
+    graph.add_edge("intent", "agent")
     if tools:
         graph.add_node("tools", ToolNode(tools))
         graph.add_conditional_edges("agent", route, ["tools", END])
         graph.add_edge("tools", "agent")
     else:
-        # 不绑工具的图：只有 agent 一个节点，物理上不可能发起工具调用。
-        # 网页用它在「用户在打招呼」这类轮次上兜底 —— 光靠提示词约束不够。
         graph.add_edge("agent", END)
     return graph.compile()
 
