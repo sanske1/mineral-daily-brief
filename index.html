@@ -369,7 +369,10 @@ $("#composer").addEventListener("submit", async e => {
   const scroll = () => { $("#log").scrollTop = $("#log").scrollHeight; };
   scroll();
 
-  let lastCall = null;
+  // 事件顺序是「先把这一轮所有 tool_call 发完，再发所有 tool_result」，
+  // 所以不能用「最后一个」去配对 —— 那样第二个结果会盖到第一个调用上，
+  // 第一个调用永远停在 pending。按工具名配对，同名工具排成队列。
+  const waiting = {};
   try{
     const res = await fetch("/api/chat", {
       method:"POST", headers:{"Content-Type":"application/json"},
@@ -381,7 +384,11 @@ $("#composer").addEventListener("submit", async e => {
       const {done, value} = await rd.read();
       if(done) break;
       buf += dec.decode(value, {stream:true});
-      const parts = buf.split("\n\n"); buf = parts.pop();
+      // sse-starlette 用的行尾是 \r\n，事件之间是 \r\n\r\n —— 直接按 "\n\n" 切会
+      // 一个事件都匹配不到（线上表现为「发出去没反应」，且不报错）。
+      // 这里每次对整个 buf 归一化，所以 \r\n 被切在两个 chunk 之间也能拼回来。
+      const parts = buf.replace(/\r\n/g, "\n").split("\n\n");
+      buf = parts.pop();
       for(const part of parts){
         let ev = "message", data = "";
         for(const line of part.split("\n")){
@@ -394,13 +401,19 @@ $("#composer").addEventListener("submit", async e => {
           trace.insertAdjacentHTML("beforeend",
             `<div class="call pending"><div class="head"><span class="name">${esc(d.name)}</span>
              <span class="args">${esc(d.args)}</span></div></div>`);
-          lastCall = trace.lastElementChild;
+          (waiting[d.name] ||= []).push(trace.lastElementChild);
         }else if(ev === "tool_result"){
-          const el = lastCall || trace.lastElementChild;
-          if(el){ el.classList.remove("pending");
+          const el = (waiting[d.name] || []).shift();
+          if(el){
+            el.classList.remove("pending");
             el.insertAdjacentHTML("beforeend",
-              `<div class="res">${esc((d.preview||"").slice(0,220))}</div>`); }
-          lastCall = null;
+              `<div class="res">${esc((d.preview||"").slice(0,220))}</div>`);
+          }else{
+            // 没有对应的调用行（比如工具在调用事件之前就失败了）—— 别把结果丢掉
+            trace.insertAdjacentHTML("beforeend",
+              `<div class="call"><div class="head"><span class="name">${esc(d.name||"?")}</span></div>
+               <div class="res">${esc((d.preview||"").slice(0,220))}</div></div>`);
+          }
         }else if(ev === "answer"){
           say.innerHTML = md(d.content);
         }else if(ev === "error"){
