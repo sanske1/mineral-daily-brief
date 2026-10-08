@@ -344,6 +344,10 @@ function showSetup(){
 
 async function boot(){
   try{
+    // 对话历史在**服务端**（app.state.history）。界面一刷新，可见的聊天记录就没了，
+    // 但服务端那份还在 —— 结果就是「界面上只有一句你好，模型却接着上一轮的
+    // 问价格任务继续调工具」。打开页面时先清一次，让「刷新 = 新对话」这个直觉成立。
+    await fetch("/api/reset", {method: "POST"});
     const s = await (await fetch("/api/status")).json();
     if(s.ready) markReady(s.model, s.key_hint, s.tools.length);
     else showSetup();
