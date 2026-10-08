@@ -28,6 +28,7 @@ import os
 import re
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -305,6 +306,7 @@ async def chat(request):
             }
             return
 
+        final_text = ""
         async with s.lock:
             s.history.append(HumanMessage(question))
             try:
@@ -324,6 +326,7 @@ async def chat(request):
                                         ),
                                     }
                                 if not getattr(m, "tool_calls", None) and m.content:
+                                    final_text = m.content
                                     yield {
                                         "event": "answer",
                                         "data": json.dumps({"content": m.content}, ensure_ascii=False),
@@ -338,6 +341,15 @@ async def chat(request):
                                 }
                     # 让出控制权，事件才会即时到达浏览器
                     await asyncio.sleep(0)
+
+                # 回答长得像简报就存档（按时间 + 主题命名），并告诉前端去刷新「简报」页
+                if looks_like_brief(final_text, question):
+                    try:
+                        info = save_brief(final_text, question)
+                        yield {"event": "brief", "data": json.dumps(info, ensure_ascii=False)}
+                    except Exception as exc:  # noqa: BLE001 - 存档失败不该影响回答
+                        print(f"  简报存档失败：{type(exc).__name__}: {exc}")
+
                 yield {"event": "done", "data": "{}"}
             except Exception as exc:  # noqa: BLE001 - 任何异常都如实告诉前端
                 yield {
@@ -412,6 +424,102 @@ async def overview(request):
     )
 
 
+# ---------------------------------------------------------------- 简报存档
+#
+# 对话里生成的简报要留得下来 —— 题目「Agent 主流程」要求的就是
+# 「输入一句话 → 输出一份 Markdown 简报」。存到数据卷里，容器重启不丢。
+
+_H1_RE = re.compile(r"^#\s+(.+)$", re.M)
+_H2_RE = re.compile(r"^##\s+", re.M)
+# 用户「要一份简报」的几种说法
+_ASK_BRIEF_RE = re.compile(r"简报|日报|briefing|每日报告|出一份.*报告")
+# 标题里带这些词，基本就认定是简报
+_TITLE_BRIEF_RE = re.compile(r"简报|日报")
+
+_BRIEF_NOISE = re.compile(
+    r"给我|帮我|请|生成|做|出一份|一份|关于|的今日|今天的|今日|简报|日报|报告|一下"
+)
+
+
+def _brief_dir() -> Path:
+    d = cache.data_dir() / "briefs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def looks_like_brief(text: str, question: str = "") -> bool:
+    """判断一段回答是不是「简报」，是就存档。
+
+    ⚠️ 一开始我按题目写死的五个小节名（新闻摘要/储量数据/价格走势/风险提示/引用来源）
+    做子串匹配 —— 实测完全不成立：模型会自己起标题
+    （那次用的是「核心事件/价格背景/结论与建议/局限」），一节都对不上，
+    结果一份合格的简报根本存不进去。
+
+    改成看**标题**和**结构**：
+      1. 一级标题里带「简报/日报」→ 认（用户要简报时模型基本都会这么起标题）
+      2. 或者用户明确要过简报，且正文有多个二级小节 → 认
+    另外要求正文够长，免得「好的，简报如下」这种半句话也被存下来。
+    """
+    if not text or len(text) < 300:
+        return False
+    m = _H1_RE.search(text)
+    if m and _TITLE_BRIEF_RE.search(m.group(1)):
+        return True
+    if _ASK_BRIEF_RE.search(question or "") and len(_H2_RE.findall(text)) >= 2:
+        return True
+    return False
+
+
+def _brief_slug(question: str) -> str:
+    """从用户的问句里抠出主题做文件名，如 "Pilbara 锂矿"。"""
+    q = _BRIEF_NOISE.sub(" ", question or "")
+    q = re.sub(r"[^\w一-鿿]+", "-", q).strip("-")
+    return (q[:28] or "简报").strip("-")
+
+
+def save_brief(text: str, question: str) -> dict:
+    ts = datetime.now()
+    name = f"{ts.strftime('%Y%m%d-%H%M%S')}-{_brief_slug(question)}.md"
+    path = _brief_dir() / name
+    head = (
+        f"> 生成时间：{ts.strftime('%Y-%m-%d %H:%M:%S')}　|　对象：{_brief_slug(question)}\n"
+        f"> 提问：{question}\n\n---\n\n"
+    )
+    path.write_text(head + text.strip() + "\n", "utf-8")
+    return {"name": name, "created": ts.isoformat(), "chars": len(text)}
+
+
+async def briefs(request):
+    """简报列表，新的在前。"""
+    items = []
+    for p in sorted(_brief_dir().glob("*.md"), reverse=True):
+        stem = p.stem  # 20261008-143022-Pilbara-锂矿
+        parts = stem.split("-", 2)
+        items.append(
+            {
+                "name": p.name,
+                "created": f"{parts[0][:4]}-{parts[0][4:6]}-{parts[0][6:8]} "
+                f"{parts[1][:2]}:{parts[1][2:4]}:{parts[1][4:6]}"
+                if len(parts) >= 2
+                else stem,
+                "subject": parts[2] if len(parts) > 2 else stem,
+                "bytes": p.stat().st_size,
+            }
+        )
+    return JSONResponse({"count": len(items), "items": items})
+
+
+async def brief_content(request):
+    name = request.path_params["name"]
+    # 只允许取本目录下的 .md，别让 ../ 之类的路径穿越读到别处
+    if "/" in name or "\\" in name or ".." in name or not name.endswith(".md"):
+        return JSONResponse({"error": "非法的文件名"}, status_code=400)
+    path = _brief_dir() / name
+    if not path.exists():
+        return JSONResponse({"error": "简报不存在"}, status_code=404)
+    return JSONResponse({"name": name, "markdown": path.read_text("utf-8")})
+
+
 async def news(request):
     """新闻列表。带 q 就用 FTS5 检索，否则按时间倒序。"""
     q = (request.query_params.get("q") or "").strip()
@@ -482,6 +590,8 @@ app = Starlette(
         Route("/api/chat", chat, methods=["POST"]),
         Route("/api/reset", reset, methods=["POST"]),
         Route("/api/overview", overview),
+        Route("/api/briefs", briefs),
+        Route("/api/briefs/{name}", brief_content),
         Route("/api/news", news),
         Route("/api/trend", trend),
     ],

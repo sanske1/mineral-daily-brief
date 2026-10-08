@@ -175,6 +175,37 @@
   .spark .cap{font-size:12px; color:var(--muted); margin-bottom:6px}
   .spark svg{display:block; width:100%; height:56px}
 
+  /* ---------- 简报存档 ---------- */
+  .brieflist .row{display:flex; justify-content:space-between; align-items:baseline;
+    gap:12px; padding:10px 0; border-bottom:1px solid var(--rule-soft); cursor:pointer}
+  .brieflist .row:hover{background:var(--panel)}
+  .brieflist .row.sel{background:#E4EBEF}
+  .brieflist .sub{font-size:13.5px; font-weight:600}
+  .brieflist .when{font-family:var(--mono); font-size:11.5px; color:var(--faint);
+    white-space:nowrap}
+  .briefbar{display:flex; align-items:center; gap:10px; margin-bottom:12px;
+    padding-bottom:10px; border-bottom:1px solid var(--rule)}
+  .briefbar .t{font-size:13px; font-weight:600; flex:1;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .briefbar button{padding:5px 12px; border:1px solid var(--rule); background:var(--panel);
+    border-radius:2px; cursor:pointer; color:var(--muted); font-size:12.5px}
+  .briefdoc{font-size:13.5px}
+  .briefdoc h1,.briefdoc h2,.briefdoc h3{font-family:var(--display); font-weight:600;
+    font-size:14.5px; margin:15px 0 6px}
+  .briefdoc h1{font-size:16.5px}
+  .briefdoc p{margin:0 0 9px}
+  .briefdoc ul{margin:0 0 9px; padding-left:19px}
+  .briefdoc blockquote{margin:0 0 10px; padding:6px 12px; border-left:2px solid var(--rule);
+    color:var(--muted); font-size:12.5px}
+  .briefdoc table{border-collapse:collapse; margin:0 0 10px; font-size:12.5px}
+  .briefdoc th,.briefdoc td{border-bottom:1px solid var(--rule-soft); padding:5px 10px 5px 0;
+    text-align:left; vertical-align:top}
+  .briefdoc th{font-family:var(--display); font-size:11.5px; color:var(--muted);
+    border-bottom-color:var(--rule)}
+  .briefdoc code{font-family:var(--mono); font-size:12px; background:var(--recess);
+    padding:1px 4px; border-radius:2px}
+  .briefdoc a{color:var(--accent)}
+
   .newsrow{padding:9px 0; border-bottom:1px solid var(--rule-soft)}
   .newsrow a{color:var(--ink); text-decoration:none; font-size:13.5px; font-weight:500}
   .newsrow a:hover{color:var(--accent)}
@@ -232,7 +263,8 @@
   <!-- 右：数据预览 -->
   <section class="pane data">
     <nav class="tabs" id="tabs">
-      <button data-v="news" aria-selected="true">新闻库</button>
+      <button data-v="brief" aria-selected="true">简报</button>
+      <button data-v="news" aria-selected="false">新闻库</button>
       <button data-v="price" aria-selected="false">价格</button>
       <button data-v="src" aria-selected="false">数据源</button>
     </nav>
@@ -264,6 +296,8 @@ function md(t){
   for(const ln of lines){
     if(/^\s*\|.*\|\s*$/.test(ln)){ flush(); tbl.push(ln); continue; }
     flushTbl();
+    const bq = ln.match(/^&gt;\s?(.*)$/);       // 引用块（简报头部的时间戳用的就是这个）
+    if(bq){ flush(); flushTbl(); out.push(`<blockquote>${bq[1]}</blockquote>`); continue; }
     const h = ln.match(/^(#{1,3})\s+(.*)$/);
     if(h){ flush(); out.push(`<h${h[1].length}>${h[2]}</h${h[1].length}>`); continue; }
     const li = ln.match(/^\s*[-*]\s+(.*)$/);
@@ -420,6 +454,13 @@ $("#composer").addEventListener("submit", async e => {
           }
         }else if(ev === "answer"){
           say.innerHTML = md(d.content);
+        }else if(ev === "brief"){
+          // 这一轮回答被判定为简报并存了档 —— 在轨迹里标一下，并让「简报」页跟着刷新
+          trace.insertAdjacentHTML("beforeend",
+            `<div class="call"><div class="head"><span class="name">已存入简报</span>
+             <span class="args">${esc(d.name)}</span></div></div>`);
+          briefOpen = null;
+          if(current === "brief") renderBriefs();
         }else if(ev === "error"){
           trace.insertAdjacentHTML("beforeend",
             `<div class="call"><div class="head"><span class="args" style="color:var(--up)">
@@ -445,7 +486,7 @@ $("#clear").addEventListener("click", async () => {
 });
 
 /* ---------------- 数据预览 ---------------- */
-let current = "news";
+let current = "brief";
 
 $("#tabs").addEventListener("click", e => {
   const b = e.target.closest("button"); if(!b) return;
@@ -455,11 +496,48 @@ $("#tabs").addEventListener("click", e => {
 });
 
 async function render(){
-  const v = $("#view");
-  v.innerHTML = `<div class="empty">读取中…</div>`;
+  $("#view").innerHTML = `<div class="empty">读取中…</div>`;
+  if(current === "brief") return renderBriefs();
   if(current === "news") return renderNews();
   if(current === "price") return renderPrice();
   return renderSources();
+}
+
+/* ---------------- 简报存档 ---------------- */
+let briefOpen = null;
+
+async function renderBriefs(){
+  const r = await (await fetch("/api/briefs")).json();
+  if(!r.count){
+    briefOpen = null;
+    $("#view").innerHTML = `<div class="empty">
+      <b>还没有简报</b>
+      在左边让它生成一份，比如「给我生成一份关于 Pilbara 锂矿的今日简报」。<br>
+      生成的简报会自动存到这里，按时间 + 主题命名。</div>`;
+    return;
+  }
+  if(briefOpen) return openBrief(briefOpen);
+
+  $("#view").innerHTML = `<div class="brieflist">${r.items.map(it => `
+    <div class="row" data-n="${esc(it.name)}">
+      <div><div class="sub">${esc(it.subject)}</div>
+           <div class="when">${esc(it.created)}</div></div>
+      <div class="when">${(it.bytes / 1024).toFixed(1)} KB</div>
+    </div>`).join("")}</div>`;
+  $("#view").querySelectorAll(".row").forEach(el =>
+    el.addEventListener("click", () => { briefOpen = el.dataset.n; openBrief(briefOpen); }));
+}
+
+async function openBrief(name){
+  const r = await (await fetch("/api/briefs/" + encodeURIComponent(name))).json();
+  if(r.error){ briefOpen = null; return renderBriefs(); }
+  $("#view").innerHTML = `
+    <div class="briefbar">
+      <button id="bback">← 列表</button>
+      <div class="t">${esc(name.replace(/\.md$/, ""))}</div>
+    </div>
+    <div class="briefdoc">${md(r.markdown)}</div>`;
+  $("#bback").addEventListener("click", () => { briefOpen = null; renderBriefs(); });
 }
 
 let newsRetry = null;
