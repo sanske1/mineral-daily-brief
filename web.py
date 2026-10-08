@@ -5,12 +5,19 @@
 复用 agent.py 的图和工具加载，不重写一套。只依赖已经装好的 starlette + uvicorn
 （fastmcp 带进来的），不引入新依赖。
 
-四个接口：
+**API Key 可以直接在网页里填**，不需要碰 .env，也不需要给 docker run 传参数。
+填过的密钥存在数据卷里（`data/web_config.json`，只在你本机），容器重启不用重填，
+不会上传到任何地方。优先级：网页填的 > 环境变量。
+
+接口：
     GET  /               页面
-    GET  /api/status     就绪状态（模型、工具清单、缺密钥时的原因）
+    GET  /api/status     就绪状态（模型、工具清单、密钥尾号）
+    POST /api/config     提交 API Key，装上模型
     POST /api/chat       Agent 对话，SSE 流式吐工具调用与回答
+    POST /api/reset      清空对话
     GET  /api/overview   数据预览：新闻库统计 + 价格快照 + 数据源
     GET  /api/news       新闻列表（可搜索）
+    GET  /api/trend      单个品种的走势序列
 """
 
 from __future__ import annotations
@@ -61,6 +68,69 @@ PREVIEW_COMMODITIES = [
     "lme_copper",
     "dce_iron_ore",
 ]
+
+
+CONFIG_FILE = "web_config.json"
+
+
+def _load_config() -> dict | None:
+    """读网页里填过的模型配置。
+
+    优先级：网页填的（存在数据卷） > 环境变量。这样「拉镜像 → 打开网站 → 填 key」
+    这条路径能盖过镜像里可能残留的旧 .env 值。
+    """
+    path = cache.data_dir() / CONFIG_FILE
+    if path.exists():
+        try:
+            cfg = json.loads(path.read_text("utf-8"))
+            if cfg.get("api_key"):
+                return cfg
+        except (json.JSONDecodeError, OSError):
+            pass
+    key = os.environ.get("OPENAI_API_KEY") or ""
+    if key and not key.startswith("sk-在这里"):
+        return {
+            "api_key": key,
+            "base_url": os.environ.get("OPENAI_BASE_URL") or "https://api.deepseek.com",
+            "model": os.environ.get("MDB_MODEL") or "deepseek-chat",
+            "from": "env",
+        }
+    return None
+
+
+def _save_config(cfg: dict) -> None:
+    path = cache.data_dir() / CONFIG_FILE
+    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
+
+
+def _mask(key: str) -> str:
+    """回给前端只看头尾，绝不把完整密钥发回去。"""
+    if not key:
+        return ""
+    return key[:6] + "…" + key[-4:] if len(key) > 14 else "已配置"
+
+
+def _build_llm(cfg: dict):
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(
+        model=cfg.get("model") or "deepseek-chat",
+        api_key=cfg["api_key"],
+        base_url=(cfg.get("base_url") or "https://api.deepseek.com").rstrip("/"),
+        temperature=0.2,
+    )
+
+
+def _install_llm(state, cfg: dict) -> None:
+    """把模型和图画进 app.state。**参数是 state 本身，不是 app**。
+
+    构造 ChatOpenAI 不会真的去调接口，所以密钥错这里发现不了 —— 要等第一次对话
+    才会以 401 的形式暴露出来。这是刻意的：填 key 时不该卡住等人。
+    """
+    llm = _build_llm(cfg)
+    state.graph = agent.build_graph(llm, state.tools)
+    state.model = llm.model_name
+    state.config = cfg
 
 
 def _text_of(result) -> str:
@@ -116,22 +186,21 @@ async def lifespan(app: Starlette):
     app.state.history = []
     app.state.lock = asyncio.Lock()
 
-    # 没配密钥也要能起来 —— 否则数据预览就白做了。缺密钥时把原因记下来，
-    # 页面上照实显示，聊天区禁用。
-    try:
-        app.state.graph = agent.build_graph(agent.make_llm(), app.state.tools)
-        app.state.model = os.environ.get("MDB_MODEL") or "deepseek-chat"
-        app.state.llm_error = None
-    except SystemExit as exc:
-        app.state.graph = None
-        app.state.model = None
-        app.state.llm_error = str(exc)
+    # **没有密钥也要正常启动** —— 否则「拉镜像就跑起来」这条就断了。
+    # 有配置就装上模型，没有就把状态置成「待配置」，页面上给一个填写表单。
+    app.state.graph = None
+    app.state.model = None
+    app.state.config = None
+    cfg = _load_config()
+    if cfg:
+        try:
+            _install_llm(app.state, cfg)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  配置的模型不可用：{type(exc).__name__}: {exc}")
 
     bind = "  （容器内绑定 0.0.0.0，浏览器开 127.0.0.1）" if HOST == "0.0.0.0" else ""
     print(f"矿权日报 Web  → http://127.0.0.1:{PORT}{bind}")
-    print(f"  工具 {len(app.state.tool_names)} 个 | 模型 {app.state.model or '未配置'}")
-    if app.state.llm_error:
-        print(f"  注意：{app.state.llm_error}")
+    print(f"  工具 {len(app.state.tool_names)} 个 | 模型 {app.state.model or '待配置（在网页里填 API Key）'}")
 
     app.state.warmup = asyncio.create_task(_warmup(app.state))
     yield
@@ -149,13 +218,45 @@ async def index(request):
 
 async def status(request):
     s = request.app.state
+    cfg = s.config or {}
     return JSONResponse(
         {
             "ready": s.graph is not None,
             "model": s.model,
-            "error": s.llm_error,
+            "key_hint": _mask(cfg.get("api_key") or ""),  # 只回头尾，不回完整密钥
+            "from": cfg.get("from") or "web",
             "tools": s.tool_names,
         }
+    )
+
+
+async def config(request):
+    """接收前端填的 API 配置，装上模型。这是「拉镜像 → 打开网站 → 填 key 就能用」的关键。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "请求体不是合法 JSON"}, status_code=400)
+
+    key = (body.get("api_key") or "").strip()
+    if not key:
+        return JSONResponse({"error": "API Key 不能为空"}, status_code=400)
+
+    cfg = {
+        "api_key": key,
+        "base_url": (body.get("base_url") or "https://api.deepseek.com").strip(),
+        "model": (body.get("model") or "deepseek-chat").strip(),
+        "from": "web",
+    }
+    try:
+        _install_llm(request.app.state, cfg)
+    except Exception as exc:  # noqa: BLE001 - 配置不合法就如实回给前端
+        return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=400)
+
+    _save_config(cfg)
+    s = request.app.state
+    print(f"  模型已配置：{s.model} @ {cfg['base_url']}（密钥存于数据卷，不会上传）")
+    return JSONResponse(
+        {"ok": True, "model": s.model, "key_hint": _mask(key), "tools": s.tool_names}
     )
 
 
@@ -185,7 +286,12 @@ async def chat(request):
 
     async def stream():
         if s.graph is None:
-            yield {"event": "error", "data": json.dumps({"message": s.llm_error}, ensure_ascii=False)}
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {"message": "模型还没配置，请先在上面填入 API Key"}, ensure_ascii=False
+                ),
+            }
             return
 
         async with s.lock:
@@ -361,6 +467,7 @@ app = Starlette(
     routes=[
         Route("/", index),
         Route("/api/status", status),
+        Route("/api/config", config, methods=["POST"]),
         Route("/api/chat", chat, methods=["POST"]),
         Route("/api/reset", reset, methods=["POST"]),
         Route("/api/overview", overview),

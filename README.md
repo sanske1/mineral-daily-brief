@@ -2,7 +2,8 @@
 
 按 MCP 协议取数、用 LangGraph 两节点编排的矿业分析助手。带一个网页界面。
 
-`python web.py` 起网页（左边对话、右边数据预览），或者 `python agent.py` 用命令行聊天。
+`python web.py` 起网页（左边对话、右边数据预览），API Key **直接在页面上填**；
+或者 `python agent.py` 用命令行聊天（这个需要 `.env`）。
 问「Pilbara 锂矿的储量和最近锂价怎么样」，它会自己去检索新闻、下载年报抽储量表、查行情，
 然后带着出处回答。
 
@@ -16,7 +17,7 @@
 |---|---|
 | 3 个 MCP server | [news_server.py](news_server.py) · [pdf_server.py](pdf_server.py) · [price_server.py](price_server.py) —— 共 9 个工具 |
 | Agent 编排 | [agent.py](agent.py) —— LangGraph 两节点（agent + toolnode） |
-| 网页界面 | [web.py](web.py) + [index.html](index.html) —— 对话 + 数据预览 |
+| 网页界面 | [web.py](web.py) + [index.html](index.html) —— 对话 + 数据预览 + 页面上填 API Key |
 | `mcp-config.json` 可接 Claude Desktop / Cursor | [mcp-config.json](mcp-config.json) |
 | `RUN.md` 5 分钟跑起来 + 一条 docker-compose | [RUN.md](RUN.md) + [docker-compose.yml](docker-compose.yml) |
 

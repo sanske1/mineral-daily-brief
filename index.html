@@ -116,9 +116,26 @@
 
   .empty{color:var(--faint); font-size:13px}
   .empty b{display:block; color:var(--ink); font-weight:600; margin-bottom:6px}
-  .notice{border-left:2px solid var(--up); padding:8px 12px; background:#FBEDEA;
-    font-size:13px; color:#7B2A1B; margin-bottom:14px}
-  .notice code{font-family:var(--mono); font-size:12.5px}
+
+  /* ---------- 首次配置：拉下镜像打开就能填，不用碰 .env ---------- */
+  .setup{border:1px solid var(--rule); border-radius:2px; background:var(--panel);
+    padding:16px 18px; max-width:520px}
+  .setup h3{margin:0 0 5px; font-family:var(--display); font-size:15px; font-weight:600}
+  .setup .hint{margin:0 0 14px; font-size:12.5px; color:var(--muted); line-height:1.6}
+  .setup label{display:block; font-size:12px; color:var(--muted); margin-bottom:10px}
+  .setup input{display:block; width:100%; margin-top:4px; padding:8px 10px;
+    border:1px solid var(--rule); border-radius:2px; background:var(--panel); outline:none;
+    font-family:var(--mono); font-size:13px}
+  .setup input:focus{border-color:var(--accent)}
+  .setup details{margin:0 0 12px}
+  .setup summary{font-size:12px; color:var(--muted); cursor:pointer; margin-bottom:10px}
+  .setup button{padding:9px 20px; border:1px solid var(--accent); background:var(--accent);
+    color:#fff; border-radius:2px; cursor:pointer; font-weight:600}
+  .setup button:disabled{opacity:.4; cursor:default}
+  .setup .err{color:var(--up); font-size:12.5px; margin-top:10px; min-height:17px}
+  header .key{font-family:var(--mono); font-size:11.5px; color:var(--faint); cursor:pointer;
+    text-decoration:underline dotted}
+  header .key:hover{color:var(--accent)}
 
   /* ---------- 右：数据预览 ---------- */
   .tabs{display:flex; gap:0; border-bottom:1px solid var(--rule); padding:0 16px}
@@ -261,23 +278,75 @@ function md(t){
     .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
 }
 
-/* ---------------- 状态 ---------------- */
+/* ---------------- 状态与首次配置 ---------------- */
+const HELLO = $("#log").innerHTML;   // 记住初始空状态，配好之后还原回来
+
+function markReady(model, hint, toolCount){
+  $("#status").innerHTML =
+    `<span class="dot"></span>就绪${toolCount ? " · " + toolCount + " 个工具" : ""}`;
+  $("#model").innerHTML =
+    `模型 ${esc(model||"")} · <span class="key" id="rekey" title="点击修改密钥">密钥 ${esc(hint||"")}</span>`;
+  $("#rekey")?.addEventListener("click", showSetup);
+  $("#send").disabled = false; $("#input").disabled = false;
+  $("#input").placeholder = "问一句…";
+}
+
+function showSetup(){
+  $("#status").innerHTML = `<span class="dot off"></span>待配置`;
+  $("#model").textContent = "";
+  $("#log").innerHTML = `
+    <div class="setup">
+      <h3>配置模型</h3>
+      <p class="hint">填入 API Key 就能开始对话。密钥只存在你本地的数据卷里
+        （<code>data/web_config.json</code>），不会上传到任何地方。</p>
+      <label>API Key
+        <input id="ck" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false">
+      </label>
+      <details>
+        <summary>换别的模型供应商</summary>
+        <label>接口地址<input id="cu" value="https://api.deepseek.com" spellcheck="false"></label>
+        <label>模型<input id="cm" value="deepseek-chat" spellcheck="false"></label>
+      </details>
+      <button id="cs">开始使用</button>
+      <div class="err" id="ce"></div>
+    </div>`;
+  $("#send").disabled = true;
+  $("#input").disabled = true;
+  $("#input").placeholder = "先配置模型";
+
+  const submit = async () => {
+    const key = $("#ck").value.trim();
+    if(!key) { $("#ce").textContent = "API Key 不能为空"; return; }
+    $("#cs").disabled = true;
+    $("#ce").textContent = "正在保存…";
+    try{
+      const r = await fetch("/api/config", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          api_key: key,
+          base_url: $("#cu").value.trim(),
+          model: $("#cm").value.trim(),
+        }),
+      });
+      const d = await r.json();
+      if(!r.ok) throw new Error(d.error || "配置失败");
+      $("#log").innerHTML = HELLO;
+      markReady(d.model, d.key_hint, d.tools.length);
+    }catch(err){
+      $("#ce").textContent = err.message;
+      $("#cs").disabled = false;
+    }
+  };
+  $("#cs").addEventListener("click", submit);
+  $("#ck").addEventListener("keydown", e => { if(e.key === "Enter") submit(); });
+  $("#ck").focus();
+}
+
 async function boot(){
   try{
     const s = await (await fetch("/api/status")).json();
-    $("#model").textContent = s.model ? "模型 " + s.model : "";
-    if(s.ready){
-      $("#status").innerHTML = `<span class="dot"></span>就绪 · ${s.tools.length} 个工具`;
-    }else{
-      $("#status").innerHTML = `<span class="dot off"></span>模型未配置`;
-      // 没配密钥时把「问点什么」的邀请撤掉 —— 否则一边邀请提问、一边把输入框禁着，自相矛盾
-      $("#hello")?.remove();
-      $("#log").insertAdjacentHTML("afterbegin",
-        `<div class="notice">${esc(s.error||"模型未就绪")}<br>
-         填好 <code>OPENAI_API_KEY</code> 后重启看左边的对话。右边的数据预览不受影响。</div>`);
-      $("#send").disabled = true; $("#input").disabled = true;
-      $("#input").placeholder = "模型未配置";
-    }
+    if(s.ready) markReady(s.model, s.key_hint, s.tools.length);
+    else showSetup();
   }catch(e){
     $("#status").textContent = "后端没响应";
   }

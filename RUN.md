@@ -27,21 +27,7 @@ uv pip install --python .venv/Scripts/python.exe -r pyproject.toml
 
 > macOS / Linux 把 `.venv/Scripts/python.exe` 换成 `.venv/bin/python`。以下同。
 
-### 2. 填密钥（约 30 秒）
-
-```bash
-cp .env.example .env
-```
-
-编辑 `.env`：
-
-```ini
-OPENAI_API_KEY=sk-你的真实密钥
-OPENAI_BASE_URL=https://api.deepseek.com
-MDB_MODEL=deepseek-chat
-```
-
-### 3. 打开网页
+### 2. 打开网页
 
 ```bash
 ./.venv/Scripts/python.exe web.py
@@ -50,7 +36,19 @@ MDB_MODEL=deepseek-chat
 浏览器开 **http://127.0.0.1:8000**。左边是 Agent 对话，右边是数据预览
 （新闻库 / 价格 / 数据源三个标签页）。
 
+**API Key 直接在网页上填**，页面会有一个输入框。不用建 `.env`，不用重启。
+填过的密钥存在 `data/web_config.json`（只在你本机），下次启动不用重填。
+
 > 首次启动本地新闻库是空的，后台会自动抓一轮（约 15 秒），新闻标签页会自己刷新出来。
+> 这一步不需要密钥 —— 右边的数据预览在没有 Key 时也能用。
+
+**也可以走 .env**（命令行模式、CI、或想固定配置时用）：
+
+```bash
+cp .env.example .env      # 填 OPENAI_API_KEY / OPENAI_BASE_URL / MDB_MODEL
+```
+
+优先级：**网页里填的 > 环境变量**。
 
 ### 3b. 或者用命令行
 
@@ -102,20 +100,26 @@ START ──► agent ──(有 tool_calls)──► tools ──┐
 
 ## Docker 方式
 
-### 从 GitHub 拉现成镜像跑（不用装 Python）
+### 从 GitHub 拉现成镜像跑（不用装 Python，也不用配密钥）
 
 推代码到 GitHub 后，`.github/workflows/docker-publish.yml` 会自动把镜像推到 GHCR。
-之后任何装了 Docker 的机器：
+之后任何装了 Docker 的机器，**一条命令**：
 
 ```bash
-docker run -d --name mdb -p 8000:8000 \
-  --env-file .env \
-  -v mdb-data:/app/data \
-  ghcr.io/<你的用户名>/<仓库名>:latest
+docker run -d --name mdb -p 8000:8000 ghcr.io/<你的用户名>/<仓库名>:latest
 ```
 
-浏览器开 **http://localhost:8000**。`-v mdb-data` 是持久化数据卷（新闻库 + HTTP 缓存），
-容器删了也不丢。
+浏览器开 **http://localhost:8000**，页面上会有一个 **API Key 输入框** —— 填进去点「开始使用」
+就能对话。不用 `.env`，不用给 `docker run` 传任何参数。
+
+密钥存在容器内 `/app/data/web_config.json`（**只在你本机**，不上传，也不在镜像里）。
+想让它在容器删掉后还在，加一个卷：
+
+```bash
+docker run -d --name mdb -p 8000:8000 -v mdb-data:/app/data ghcr.io/<你的用户名>/<仓库名>:latest
+```
+
+这么一来容器重建也不用重填密钥，新闻库缓存也一起保留。
 
 > 私有仓库的镜像包默认也是私有的，要先登录：
 > ```bash
@@ -126,11 +130,12 @@ docker run -d --name mdb -p 8000:8000 \
 **想用命令行聊天**（而不是网页），覆盖掉默认命令：
 
 ```bash
-docker run -it --rm --env-file .env -v mdb-data:/app/data \
+docker run -it --rm -v mdb-data:/app/data \
+  -e OPENAI_API_KEY=sk-你的密钥 \
   ghcr.io/<你的用户名>/<仓库名>:latest python agent.py
 ```
 
-镜像里默认跑的是 `web.py`。三个 MCP server 也可以单独起：
+三个 MCP server 也可以单独起：
 
 ```bash
 docker run -i --rm ghcr.io/<你的用户名>/<仓库名>:latest python news_server.py
@@ -139,9 +144,8 @@ docker run -i --rm ghcr.io/<你的用户名>/<仓库名>:latest python news_serv
 ### 用 docker compose
 
 ```bash
-cp .env.example .env                                    # 填密钥
 echo "MDB_IMAGE=ghcr.io/<你的用户名>/<仓库名>:latest" > .env.docker
-docker compose --env-file .env.docker up -d web         # 网页
+docker compose --env-file .env.docker up -d web         # 网页，密钥在页面上填
 docker compose --env-file .env.docker run --rm agent    # 命令行
 ```
 
