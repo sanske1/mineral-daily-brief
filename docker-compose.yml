@@ -1,10 +1,11 @@
 # 三种用法：
 #
 # 1) 起网页（最常用）—— 浏览器开 http://localhost:8000
-#      cp .env.example .env        # 填模型密钥
 #      docker compose up -d web
+#    不需要 .env：API Key 在网页上填，存在数据卷里。
 #
-# 2) 命令行聊天：
+# 2) 命令行聊天（需要密钥）：
+#      cp .env.example .env        # 填模型密钥
 #      docker compose run --rm agent
 #
 # 3) 用 GHCR 上拉下来的镜像（不用本地构建）：
@@ -20,8 +21,12 @@ services:
     build: .
     ports:
       - "8000:8000"
+    # required: false 是必须的 —— .env 被 gitignore 了，刚 clone 下来根本没有这个文件，
+    # 而 Compose 默认会把它当必需文件、直接报「env file not found」退出。
+    # 网页这条路径本来也不需要密钥（在页面上填），有 .env 时仍然读进来当兜底。
     env_file:
-      - .env
+      - path: .env
+        required: false
     volumes:
       - mdb-data:/app/data  # SQLite 库 + HTTP 缓存，容器删了也不丢
     restart: unless-stopped
@@ -33,7 +38,8 @@ services:
     stdin_open: true        # 交互聊天，必须留 stdin，否则一问就 EOF
     tty: true
     env_file:
-      - .env
+      - path: .env
+        required: false     # 没有 .env 时让它跑到「没有 API 密钥」那句提示，而不是 compose 报错
     volumes:
       - mdb-data:/app/data
     profiles: ["cli"]

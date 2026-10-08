@@ -100,6 +100,23 @@ START ──► agent ──(有 tool_calls)──► tools ──┐
 
 ## Docker 方式
 
+### 克隆下来直接跑（不用装 Python，也不用配密钥）
+
+```bash
+git clone https://github.com/sanske1/mineral-daily-brief.git
+cd mineral-daily-brief
+```
+
+```bash
+docker compose up -d web
+```
+
+浏览器开 **http://localhost:8000**，页面上会有一个 **API Key 输入框** —— 填进去点「开始使用」
+就能对话。**不需要 `.env`，也不需要给命令传任何参数。**
+
+首次会本地构建镜像（约 3–5 分钟，`pymupdf` / `langgraph` 的轮子较大），之后走缓存。
+密钥存在数据卷里，容器重建不用重填，新闻库缓存也一起保留。
+
 ### 从 GitHub 拉现成镜像跑（不用装 Python，也不用配密钥）
 
 推代码到 GitHub 后，`.github/workflows/docker-publish.yml` 会自动把镜像推到 GHCR。
