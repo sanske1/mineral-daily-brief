@@ -131,8 +131,29 @@ def _install_llm(state, cfg: dict) -> None:
     """
     llm = _build_llm(cfg)
     state.graph = agent.build_graph(llm, state.tools)
+    # 不绑工具的图，给寒暄类轮次用（见 is_chitchat）
+    state.chat_graph = agent.build_graph(llm, [])
     state.model = llm.model_name
     state.config = cfg
+
+
+# 纯打招呼 / 纯客套。**只匹配整句就是问候的**，所以「你好，顺便查下铜价」不会被误判。
+_CHITCHAT_RE = re.compile(
+    r"^(你好|您好|哈喽|嗨|在吗|早上好|中午好|晚上好|谢谢|多谢|感谢|辛苦了|"
+    r"hi|hello|hey|yo|thanks|thank you|ok|okay|好的|收到)[\s!！。.~～,，、?？]*$",
+    re.I,
+)
+
+
+def is_chitchat(text: str) -> bool:
+    """这句是不是「不需要任何外部数据」的寒暄。
+
+    为什么要做这道确定性判断，而不是只靠提示词：实测模型会被上文带偏 ——
+    上一轮在查铁矿石走势，这一轮只说「你好」，它又去调了一遍 get_trend(铁矿石)。
+    提示词里写了规则也压不住，所以干脆让这类消息走**不绑工具的图**，
+    从机制上杜绝工具调用。
+    """
+    return bool(_CHITCHAT_RE.match((text or "").strip()))
 
 
 def _fresh_history() -> list:
@@ -204,6 +225,7 @@ async def lifespan(app: Starlette):
     # **没有密钥也要正常启动** —— 否则「拉镜像就跑起来」这条就断了。
     # 有配置就装上模型，没有就把状态置成「待配置」，页面上给一个填写表单。
     app.state.graph = None
+    app.state.chat_graph = None
     app.state.model = None
     app.state.config = None
     cfg = _load_config()
@@ -319,11 +341,14 @@ async def chat(request):
             }
             return
 
+        # 寒暄类走不绑工具的图 —— 上一轮在查铁矿石时，这一轮说「你好」
+        # 模型会以为要继续更新那份数据，提示词压不住。见 is_chitchat()。
+        graph = s.chat_graph if is_chitchat(question) else s.graph
         final_text = ""
         async with s.lock:
             s.history.append(HumanMessage(question))
             try:
-                async for chunk in s.graph.astream({"messages": s.history}, stream_mode="updates"):
+                async for chunk in graph.astream({"messages": s.history}, stream_mode="updates"):
                     for node, update in chunk.items():
                         for m in update.get("messages", []):
                             if node == "agent":

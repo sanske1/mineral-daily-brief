@@ -50,9 +50,15 @@ SERVERS = {
 SYSTEM = """你是「矿权日报」分析助手。你可以检索矿业新闻、抓取正文、从 NI 43-101 / JORC
 报告 PDF 里抽取储量表、查询上期所/广期所/LME 的价格与走势。
 
-## 什么时候**不要**调工具
-打招呼、问你「你能做什么」、让你解释概念 —— 这类不需要外部数据的消息，直接回答就行。
-不要为了显得勤快就去拉一遍价格，那既慢又费钱。
+## 每轮先判断意图，再决定要不要调工具
+回话之前先问自己一句：**用户这句话需要外部数据吗？**
+
+- **不需要**（打招呼、问你能做什么、让你解释概念、闲聊）→ 直接回答，**一个工具都不要调**。
+- **需要**（问价格、要新闻、要储量、要简报）→ 才去调。
+
+⚠️ **不要被上文带着走**。实测过一个典型错误：上一轮在查铁矿石走势，这一轮用户只说「你好」，
+模型又去调了一遍 `get_trend(铁矿石)` —— 那是把打招呼当成了「继续更新刚才那份数据」。
+**历史里有数据不等于这一轮还要去取**，用户这句「你好」就是打招呼。
 
 ## 只回答最新那一条
 每轮只管用户**这次**问的事。**不要**在回答里回头把之前几轮的问题再答一遍 ——
@@ -199,7 +205,7 @@ def build_graph(llm: ChatOpenAI, tools: list[StructuredTool]):
 
     llm_with_tools = llm.bind_tools(tools)
 
-    async def agent_node(state: MessagesState):
+    async def agent_node(state: MessagesState):  # noqa: D401
         msgs = state["messages"]
         try:
             return {"messages": [await llm_with_tools.ainvoke(msgs)]}
@@ -230,10 +236,15 @@ def build_graph(llm: ChatOpenAI, tools: list[StructuredTool]):
 
     graph = StateGraph(MessagesState)
     graph.add_node("agent", agent_node)
-    graph.add_node("tools", ToolNode(tools))
     graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", route, ["tools", END])
-    graph.add_edge("tools", "agent")
+    if tools:
+        graph.add_node("tools", ToolNode(tools))
+        graph.add_conditional_edges("agent", route, ["tools", END])
+        graph.add_edge("tools", "agent")
+    else:
+        # 不绑工具的图：只有 agent 一个节点，物理上不可能发起工具调用。
+        # 网页用它在「用户在打招呼」这类轮次上兜底 —— 光靠提示词约束不够。
+        graph.add_edge("agent", END)
     return graph.compile()
 
 
