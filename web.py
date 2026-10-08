@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -240,6 +241,16 @@ async def config(request):
     key = (body.get("api_key") or "").strip()
     if not key:
         return JSONResponse({"error": "API Key 不能为空"}, status_code=400)
+    # 这里必须拦：粘贴出错时整个对话记录都会被塞进来，随后表现为
+    # HTTP 头无法用 ascii 编码，报出来的错跟密钥八竿子打不着，极难排查。
+    if len(key) > 200 or not key.isascii() or re.search(r"\s", key):
+        return JSONResponse(
+            {
+                "error": f"这看起来不是 API Key（长度 {len(key)}，含空格/换行/非 ASCII 字符）。"
+                "请确认粘贴的是密钥本身，不是别的内容。"
+            },
+            status_code=400,
+        )
 
     cfg = {
         "api_key": key,

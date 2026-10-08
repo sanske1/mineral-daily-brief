@@ -175,11 +175,11 @@ def build_graph(llm: ChatOpenAI, tools: list[StructuredTool]):
                 ]
                 return {"messages": [await llm_with_tools.ainvoke(nudged)]}
             except Exception:
-                return {
-                    "messages": [
-                        AIMessage(content="工具调用参数反复解析失败。请换个说法重问一次。")
-                    ]
-                }
+                # 重试也失败，说明多半**不是**「参数格式」问题（密钥无效、网络不通、
+                # 请求头非法都会走到这里）。把原始错误原样抛出去，让用户看到真正的原因。
+                # 早先这里回一句「工具调用参数解析失败」，把密钥错误之类的全盖成同一句话，
+                # 排查时被结结实实带偏过一次。
+                raise exc
 
     def route(state: MessagesState):
         """模型这一轮调工具了就去 tools，否则收尾。"""
