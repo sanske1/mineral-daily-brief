@@ -65,6 +65,30 @@ SYSTEM = """你是「矿权日报」分析助手。你可以检索矿业新闻�
 「项目名」才命中行业媒体（查 "Pilbara Minerals" 全是推广稿，改查 "Pilgangoora" 才有真报道）。
 换过一次再不行，就在回答里明说「没检索到可靠报道」并列出已尝试的词。
 
+## 出简报时的固定结构
+用户要「简报 / 日报」时，**必须**用下面这个结构，不要自己另起一套小节名：
+
+    # 矿权日报 · <对象> · <日期>
+
+    ## 一、新闻摘要
+    （3-5 条，每条一句话概括 + 来源）
+
+    ## 二、储量数据
+    ## 三、价格走势
+    ## 四、风险提示
+    ## 引用来源
+    （编号列出所有用到的链接）
+
+四节里**每一节都要有**。拿不到就在那一节里写明「本次未取得」和原因，
+**绝不许悄悄跳过整节** —— 漏掉一节而不说，比明说拿不到糟得多。
+
+**「储量数据」这一节必须真的去查**，不能因为新闻里没提到就当它不存在：
+
+1. 先 `mineral-pdf_known_reports` 查有没有登记该公司的技术报告
+2. 有就把 PDF 链接喂给 `mineral-pdf_extract_resources` 抽 Indicated / Inferred
+
+查完确实没有，再写「本次未取得储量数据（原因：…）」。
+
 ## 硬性要求
 - 每个数字都要来自工具返回，不要凭记忆或心算。价格要标数据源。
 - 工具说拿不到，就说拿不到（全文不可用 / 没识别出储量表 / 低置信度），
@@ -97,13 +121,28 @@ def mcp_config() -> dict:
     }
 
 
+def _json_type_of(spec: dict) -> str:
+    """从一段 JSON Schema 里判断类型。
+
+    ⚠️ 坑在这里：`Annotated[X | None, Field(...)]` 生成的是
+    `{"anyOf": [{"type": "integer"}, {"type": "null"}]}`，
+    **没有顶层 `type` 字段**。直接 `spec.get("type", "string")` 会拿到默认值 "string"，
+    把所有可选参数一律声明成字符串 —— 数组参数因此被拒（"Input should be a valid list"）。
+    """
+    t = spec.get("type")
+    if t is None:
+        for opt in spec.get("anyOf") or spec.get("oneOf") or []:
+            if opt.get("type") and opt["type"] != "null":
+                return opt["type"]
+    return t or "string"
+
+
 def _args_schema(tool) -> type:
     """从 MCP 工具的 input_schema 生成 pydantic 模型，供 StructuredTool 用。
 
-    数组类型这里放宽成 `list | str`：实测模型会把它写成 "A,B" 这种字符串，
+    数组类型放宽成 `list | str`：实测模型会把它写成 "A,B" 这种字符串，
     而 pydantic 校验发生在**模型响应解析阶段**（还没进 ToolNode），
-    一旦失败会直接打断整轮对话、连回答都没有。放宽 schema + 在 wrapper 里归一化，
-    比让一次格式小错炸掉整轮划算。这类出入在别的参数上也可能出现，先兜住数组这一类。
+    一旦失败会直接打断整轮对话。放宽 schema + 在 wrapper 里归一化更划算。
     """
     schema = getattr(tool, "input_schema", None) or {}
     props = schema.get("properties") or {}
@@ -112,11 +151,14 @@ def _args_schema(tool) -> type:
         "integer": int,
         "number": float,
         "boolean": bool,
-        "array": list | str,
+        "array": list | str | None,   # 模型有时显式传 null，别为这个把整轮打断
         "object": dict,
     }
     fields = {
-        k: (types.get(v.get("type", "string"), str), ... if k in required else v.get("default"))
+        k: (
+            types.get(_json_type_of(v), str),
+            ... if k in required else v.get("default"),
+        )
         for k, v in props.items()
     }
     return create_model(f"{tool.name.replace('-', '_')}_args", **fields)

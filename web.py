@@ -135,6 +135,19 @@ def _install_llm(state, cfg: dict) -> None:
     state.config = cfg
 
 
+def _fresh_history() -> list:
+    """新对话的初始消息。
+
+    ⚠️ **必须带 SystemMessage**。web.py 早先直接从空列表开始往图里塞用户消息，
+    结果 agent.SYSTEM 里那些规则（简报固定结构、abstain 纪律、别乱调工具、
+    只回答最新那条）**一条都没生效** —— 网页里的 agent 是在没有任何系统提示的
+    情况下裸跑的。表现出来就是它自己发明简报结构、无视格式要求。
+    """
+    from langchain_core.messages import SystemMessage
+
+    return [SystemMessage(content=agent.SYSTEM)]
+
+
 def _text_of(result) -> str:
     """从 MCP 调用结果里取文本，用于工具结果的预览。"""
     data = getattr(result, "data", None)
@@ -185,7 +198,7 @@ async def lifespan(app: Starlette):
     app.state.client = client
     app.state.tools = [agent.make_tool(client, t) for t in await client.list_tools()]
     app.state.tool_names = [t.name for t in await client.list_tools()]
-    app.state.history = []
+    app.state.history = _fresh_history()
     app.state.lock = asyncio.Lock()
 
     # **没有密钥也要正常启动** —— 否则「拉镜像就跑起来」这条就断了。
@@ -361,7 +374,7 @@ async def chat(request):
 
 
 async def reset(request):
-    request.app.state.history = []
+    request.app.state.history = _fresh_history()
     return JSONResponse({"ok": True})
 
 
