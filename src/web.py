@@ -45,7 +45,8 @@ from starlette.routing import Route  # noqa: E402
 import agent  # noqa: E402
 import cache  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent
+SRC_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SRC_DIR.parent          # src/ 的上一层就是仓库根
 load_dotenv(REPO_ROOT / ".env")
 
 # 绑哪个地址。默认只绑本机（安全）；容器里要设 HOST=0.0.0.0，否则从宿主机访问不到。
@@ -227,7 +228,7 @@ async def lifespan(app: Starlette):
 
 
 async def index(request):
-    html = (REPO_ROOT / "index.html").read_text("utf-8")
+    html = (SRC_DIR / "index.html").read_text("utf-8")
     return HTMLResponse(html)
 
 

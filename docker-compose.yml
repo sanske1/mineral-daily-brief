@@ -35,6 +35,9 @@ services:
   agent:
     image: ${MDB_IMAGE:-mineral-daily-brief:latest}
     build: .
+    # 镜像默认 CMD 是网页，这里必须覆盖成命令行 —— 之前漏了这行，
+    # `docker compose run --rm agent` 实际起的是网页
+    command: ["python", "src/agent.py"]
     stdin_open: true        # 交互聊天，必须留 stdin，否则一问就 EOF
     tty: true
     env_file:
@@ -50,7 +53,7 @@ services:
   mining-news:
     image: ${MDB_IMAGE:-mineral-daily-brief:latest}
     build: .
-    command: ["python", "news_server.py"]
+    command: ["python", "src/news_server.py"]
     stdin_open: true
     tty: false
     volumes:
@@ -60,7 +63,7 @@ services:
   mineral-pdf:
     image: ${MDB_IMAGE:-mineral-daily-brief:latest}
     build: .
-    command: ["python", "pdf_server.py"]
+    command: ["python", "src/pdf_server.py"]
     stdin_open: true
     tty: false
     volumes:
@@ -70,7 +73,7 @@ services:
   lme-price:
     image: ${MDB_IMAGE:-mineral-daily-brief:latest}
     build: .
-    command: ["python", "price_server.py"]
+    command: ["python", "src/price_server.py"]
     stdin_open: true
     tty: false
     volumes:

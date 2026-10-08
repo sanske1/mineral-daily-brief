@@ -1,7 +1,7 @@
 # 一个镜像装下 3 个 MCP server + Agent。
 #
-# 默认命令是 Agent 的交互聊天；3 个 MCP server 由 agent.py 自己作为子进程拉起
-# （它们都在同一个镜像里），也可以单独跑，见 RUN.md。
+# 源码都在 /app/src 下；数据目录是 /app/data（声明成卷）。
+# 默认命令起网页；3 个 MCP server 由 agent.py 自己作为子进程拉起，也可以单独跑，见 RUN.md。
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -23,8 +23,8 @@ RUN pip install --no-cache-dir \
       "fastmcp>=4.0" "langgraph>=1.0" "langchain-openai>=1.0" \
       "httpx>=0.27" "pymupdf>=1.24" "pdfplumber>=0.11" "python-dotenv>=1.0"
 
-# 代码 + 页面：一个缓存层 + 三个 server + 一个 agent + 一个网页
-COPY cache.py news_server.py pdf_server.py price_server.py agent.py web.py index.html ./
+# 代码 + 页面：一个缓存层 + 三个 server + 一个 agent + 一个网页，都在 src/ 下
+COPY src/ ./src/
 
 # 运行时状态（SQLite 库 + HTTP 缓存）都在这里。声明成卷，容器删了数据不丢。
 RUN mkdir -p /app/data
@@ -43,6 +43,6 @@ ENV HOST=0.0.0.0 \
 EXPOSE 8000
 
 # 默认起网页。要命令行聊天或跑某个 MCP server，覆盖 command：
-#   docker run -it --rm <镜像> python agent.py          # 命令行聊天
-#   docker run -i --rm <镜像> python news_server.py     # 当 MCP server 用
-CMD ["python", "web.py"]
+#   docker run -it --rm <镜像> python src/agent.py          # 命令行聊天
+#   docker run -i --rm <镜像> python src/news_server.py     # 当 MCP server 用
+CMD ["python", "src/web.py"]

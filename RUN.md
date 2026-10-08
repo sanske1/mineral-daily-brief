@@ -67,7 +67,7 @@ docker run -d --name mineral-web -p 8000:8000 -v mdb-data:/app/data ghcr.io/sans
 ```bash
 docker run -it --rm -v mdb-data:/app/data \
   -e OPENAI_API_KEY=sk-你的密钥 \
-  ghcr.io/sanske1/mineral-daily-brief:latest python agent.py
+  ghcr.io/sanske1/mineral-daily-brief:latest python src/agent.py
 ```
 
 ### 三个 MCP server 单独起
@@ -75,7 +75,7 @@ docker run -it --rm -v mdb-data:/app/data \
 给别的 MCP 客户端当数据源用：
 
 ```bash
-docker run -i --rm ghcr.io/sanske1/mineral-daily-brief:latest python news_server.py
+docker run -i --rm ghcr.io/sanske1/mineral-daily-brief:latest python src/news_server.py
 ```
 
 日常聊天**不需要**这一步 —— Agent 会自己把这 3 个 server 当子进程拉起来。
@@ -118,7 +118,7 @@ uv pip install --python .venv/Scripts/python.exe -r pyproject.toml
 ### 2. 起网页
 
 ```bash
-./.venv/Scripts/python.exe web.py
+./.venv/Scripts/python.exe src/web.py
 ```
 
 浏览器开 **http://127.0.0.1:8000** —— 和 Docker 那个网页完全一样，左侧对话、右侧数据预览。
@@ -128,7 +128,7 @@ API Key 同样在页面上填，不用建 `.env`。填过的存在 `data/web_con
 端口被占就换一个：
 
 ```bash
-PORT=9000 ./.venv/Scripts/python.exe web.py
+PORT=9000 ./.venv/Scripts/python.exe src/web.py
 ```
 
 > `web.py` 默认只绑 `127.0.0.1`（本机），要给别人访问才需要 `HOST=0.0.0.0`。
@@ -139,7 +139,7 @@ PORT=9000 ./.venv/Scripts/python.exe web.py
 `agent.py` 是**命令行入口**，不起网页：
 
 ```bash
-./.venv/Scripts/python.exe agent.py
+./.venv/Scripts/python.exe src/agent.py
 ```
 
 ```
@@ -197,17 +197,17 @@ data/
   "mcpServers": {
     "mining-news": {
       "command": "<仓库路径>/.venv/Scripts/python.exe",
-      "args": ["<仓库路径>/news_server.py"],
+      "args": ["<仓库路径>/src/news_server.py"],
       "env": { "PYTHONIOENCODING": "utf-8", "MDB_DATA_DIR": "<仓库路径>/data" }
     },
     "mineral-pdf": {
       "command": "<仓库路径>/.venv/Scripts/python.exe",
-      "args": ["<仓库路径>/pdf_server.py"],
+      "args": ["<仓库路径>/src/pdf_server.py"],
       "env": { "PYTHONIOENCODING": "utf-8", "MDB_DATA_DIR": "<仓库路径>/data" }
     },
     "lme-price": {
       "command": "<仓库路径>/.venv/Scripts/python.exe",
-      "args": ["<仓库路径>/price_server.py"],
+      "args": ["<仓库路径>/src/price_server.py"],
       "env": { "PYTHONIOENCODING": "utf-8", "MDB_DATA_DIR": "<仓库路径>/data" }
     }
   }
@@ -250,21 +250,25 @@ data/
 
 ```
 mineral-daily-brief/
-├── cache.py            数据缓存层（三个 server 共同依赖）
-├── news_server.py      mining-news MCP
-├── pdf_server.py       mineral-pdf MCP
-├── price_server.py     lme-price MCP
-├── agent.py            LangGraph 三节点 + MCP 工具加载 + 命令行入口
-├── web.py              网页后端（复用 agent 的图 + 数据预览接口）
-├── index.html          网页前端（一页，无构建步骤）
+├── src/                全部源码在这里
+│   ├── cache.py            数据缓存层（三个 server 共同依赖）
+│   ├── news_server.py      mining-news MCP
+│   ├── pdf_server.py       mineral-pdf MCP
+│   ├── price_server.py     lme-price MCP
+│   ├── agent.py            LangGraph 三节点 + MCP 工具加载 + 命令行入口
+│   ├── web.py              网页后端（复用 agent 的图 + 数据预览接口）
+│   └── index.html          网页前端（一页，无构建步骤）
+├── data/
+│   ├── brief.sqlite3   预置新闻库（随仓库分发、也打进镜像）
+│   └── ...             运行时生成：密钥 / 简报存档 / HTTP 缓存
 ├── Dockerfile / docker-compose.yml
 ├── .github/workflows/docker-publish.yml   推到 main 自动构建并推 GHCR
 ├── pyproject.toml / .env.example / .gitignore / .dockerignore
-├── README.md / RUN.md
-└── data/
-    ├── brief.sqlite3   预置新闻库（随仓库分发、也打进镜像）
-    └── ...             运行时生成：密钥 / 简报存档 / HTTP 缓存
+└── README.md / RUN.md
 ```
+
+源码在 `src/` 下、数据在 `data/` 下 —— 运行时写的文件（密钥、缓存、简报存档）
+不会和源码混在根目录。`cache.py` 自己会往上退一层找 `data/`，不用配环境变量。
 
 网页只用 starlette + uvicorn（fastmcp 已经带进来的），**没有引入新依赖**，
 也没有前端构建步骤 —— `index.html` 直接打开就能改。

@@ -219,7 +219,8 @@ class FetchError(RuntimeError):
 
 def data_dir() -> Path:
     raw = os.environ.get("MDB_DATA_DIR")
-    base = Path(raw) if raw else Path(__file__).resolve().parent / "data"
+    # 源码在 src/ 下，数据目录在仓库根 —— 所以往上退一层
+    base = Path(raw) if raw else Path(__file__).resolve().parent.parent / "data"
     base.mkdir(parents=True, exist_ok=True)
     return base
 

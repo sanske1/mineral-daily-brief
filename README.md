@@ -22,7 +22,7 @@ flowchart LR
     A -->|无 tool_calls| E([END])
 ```
 
-三个节点，代码在 [agent.py](agent.py) 的 `build_graph()`。
+三个节点，代码在 [agent.py](src/agent.py) 的 `build_graph()`。
 
 ### `intent` —— 判断意图 + 改写输入
 
@@ -71,7 +71,7 @@ LangGraph 的 `ToolNode`。工具在**启动时**从 3 个 MCP server 一次性�
 ### 工具怎么从 MCP 到 LangGraph
 
 用 FastMCP 的 `Client` 把 3 个 server 拉起来，`list_tools()` 拿到 9 个工具，
-再逐个包成 LangChain 的 `StructuredTool`（[agent.py](agent.py) 的 `make_tool()`）——
+再逐个包成 LangChain 的 `StructuredTool`（[agent.py](src/agent.py) 的 `make_tool()`）——
 用 MCP 的 `input_schema` 动态生成 pydantic 模型当 `args_schema`。
 
 工具名是 FastMCP 给的 `{server}_{tool}`（如 `lme-price_get_price`），
@@ -96,7 +96,7 @@ LangGraph 的 `ToolNode`。工具在**启动时**从 3 个 MCP server 一次性�
 唯一的运行时状态是一个 SQLite 文件加一个 HTTP 缓存目录。所以每一个都能**单独挂进
 Claude Desktop / Cursor 跑起来**，也可以只挂其中一个。
 
-### `mining-news` — 矿业新闻 · [news_server.py](news_server.py)
+### `mining-news` — 矿业新闻 · [news_server.py](src/news_server.py)
 
 | 工具 | 签名 | 作用 |
 |---|---|---|
@@ -110,7 +110,7 @@ Claude Desktop / Cursor 跑起来**，也可以只挂其中一个。
 仓库和镜像里都**预置了一份新闻库**（`data/brief.sqlite3`，676 篇，2026-08-17 ~ 10-08），
 所以克隆下来、或者容器一起来就有新闻可搜，不用等首次抓取。
 
-### `mineral-pdf` — 技术报告储量抽取 · [pdf_server.py](pdf_server.py)
+### `mineral-pdf` — 技术报告储量抽取 · [pdf_server.py](src/pdf_server.py)
 
 | 工具 | 签名 | 作用 |
 |---|---|---|
@@ -119,7 +119,7 @@ Claude Desktop / Cursor 跑起来**，也可以只挂其中一个。
 
 抽出来的是矿石量（Mt）、品位（g/t 或 %）、金属量（oz 或 t）。
 
-### `lme-price` — 价格行情 · [price_server.py](price_server.py)
+### `lme-price` — 价格行情 · [price_server.py](src/price_server.py)
 
 | 工具 | 签名 | 作用 |
 |---|---|---|
@@ -217,7 +217,7 @@ Claude Desktop / Cursor 跑起来**，也可以只挂其中一个。
 
 ### 第 3 步：调用工具，返回 agent ⭐
 
-`get_price` 在 [price_server.py](price_server.py) 里，内部是一条五跳的链路。
+`get_price` 在 [price_server.py](src/price_server.py) 里，内部是一条五跳的链路。
 
 **3.1 把「铁矿石」解析成品种** —— `resolve()`
 
@@ -369,7 +369,15 @@ Google News → 再精确召回 → 才降级到宽松召回（OR，标 `low_con
 
 | 入口 | 命令 | 说明 |
 |---|---|---|
-| 网页 | `python web.py` → `localhost:8000` | 左边对话、右边数据预览（简报 / 新闻库 / 价格 / 数据源） |
-| 命令行 | `python agent.py` | 交互式聊天，每次工具调用和返回都会打印 |
+| 网页 | `python src/web.py` → `localhost:8000` | 左边对话、右边数据预览（简报 / 新闻库 / 价格 / 数据源） |
+| 命令行 | `python src/agent.py` | 交互式聊天，每次工具调用和返回都会打印 |
 
 API Key 可以直接在网页上填，不需要 `.env`。
+
+---
+
+## 使用说明
+
+本项目为**面试提交作品**，仅供面试评估使用。
+
+版权归作者所有（© 2026 sanske1）。未经作者许可，不得用于商业用途或二次分发。

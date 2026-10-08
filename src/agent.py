@@ -38,7 +38,8 @@ from langgraph.graph import END, START, MessagesState, StateGraph  # noqa: E402
 from langgraph.prebuilt import ToolNode  # noqa: E402
 from pydantic import create_model  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent
+SRC_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SRC_DIR.parent          # src/ 的上一层就是仓库根
 load_dotenv(REPO_ROOT / ".env")
 
 # MCP server 注册表
@@ -114,7 +115,7 @@ def mcp_config() -> dict:
         "mcpServers": {
             name: {
                 "command": sys.executable,
-                "args": [str((REPO_ROOT / script).resolve())],
+                "args": [str((SRC_DIR / script).resolve())],
                 "env": {
                     **os.environ,
                     "PYTHONIOENCODING": "utf-8",  # Windows 上不给会因 GBK 编码把管道搞坏
