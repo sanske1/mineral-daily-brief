@@ -28,6 +28,13 @@ COPY cache.py news_server.py pdf_server.py price_server.py agent.py web.py index
 
 # 运行时状态（SQLite 库 + HTTP 缓存）都在这里。声明成卷，容器删了数据不丢。
 RUN mkdir -p /app/data
+
+# 预置新闻库（676 篇，2026-08-17 ~ 10-08）烤进镜像。
+# 容器首次挂一个空数据卷时，Docker 会把镜像里 /app/data 的内容拷进卷里 ——
+# 所以 `docker run` 一启动就有新闻可搜，不用等那一轮后台抓取。
+# 卷已经存在的话不会被覆盖（只在首次创建时播种）。
+COPY data/brief.sqlite3 /app/data/brief.sqlite3
+
 VOLUME ["/app/data"]
 
 # 容器里必须绑 0.0.0.0，否则从宿主机访问不到（web.py 默认只绑 127.0.0.1）

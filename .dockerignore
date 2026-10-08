@@ -2,7 +2,9 @@
 .venv/
 
 # 运行时状态：容器里挂卷，不该打进镜像
-data/
+# 例外：brief.sqlite3 是预置新闻库，烤进镜像后首次挂空卷会播种进数据卷
+data/*
+!data/brief.sqlite3
 out/
 
 # 密钥：绝不能进镜像

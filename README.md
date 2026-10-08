@@ -107,6 +107,9 @@ Claude Desktop / Cursor 跑起来**，也可以只挂其中一个。
 两条互补通道：**常驻 RSS**（mining.com、The Northern Miner，翻页可回溯数年）+
 **按查询实时抓 Google News**（中英各一路）。
 
+仓库和镜像里都**预置了一份新闻库**（`data/brief.sqlite3`，676 篇，2026-08-17 ~ 10-08），
+所以克隆下来、或者容器一起来就有新闻可搜，不用等首次抓取。
+
 ### `mineral-pdf` — 技术报告储量抽取 · [pdf_server.py](pdf_server.py)
 
 | 工具 | 签名 | 作用 |

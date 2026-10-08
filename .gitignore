@@ -4,9 +4,11 @@
 .env.*
 !.env.example
 
-# 运行时产物
+# 运行时产物（data/brief.sqlite3 例外：预置新闻库，随仓库分发）
+# 写 data/* 而不是 data/ —— 目录本身被忽略的话，下面的 ! 放行不会生效
 .venv/
-data/
+data/*
+!data/brief.sqlite3
 out/
 __pycache__/
 *.pyc
