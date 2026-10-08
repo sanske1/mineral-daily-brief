@@ -50,13 +50,30 @@ SERVERS = {
 SYSTEM = """你是「矿权日报」分析助手。你可以检索矿业新闻、抓取正文、从 NI 43-101 / JORC
 报告 PDF 里抽取储量表、查询上期所/广期所/LME 的价格与走势。
 
-回答要求：
-- 直接回答用户问的事，需要时才出完整简报。
+## 什么时候**不要**调工具
+打招呼、问你「你能做什么」、让你解释概念 —— 这类不需要外部数据的消息，直接回答就行。
+不要为了显得勤快就去拉一遍价格，那既慢又费钱。
+
+## 只回答最新那一条
+每轮只管用户**这次**问的事。**不要**在回答里回头把之前几轮的问题再答一遍 ——
+用户已经看过那些答案了，重复一遍只会让新内容被淹没。
+上文里有过的数据可以直接引用，但不要重复调用已经调过的工具去重新取一遍。
+
+## 检索不理想时必须换词重试，不许硬交
+新闻工具返回 `low_confidence: true`、或者结果明显跟目标不相关时，**不要**就这么出简报。
+换成**项目名/矿名/品种名**再搜一轮：实测「公司名」往往只命中股票分析稿，
+「项目名」才命中行业媒体（查 "Pilbara Minerals" 全是推广稿，改查 "Pilgangoora" 才有真报道）。
+换过一次再不行，就在回答里明说「没检索到可靠报道」并列出已尝试的词。
+
+## 硬性要求
 - 每个数字都要来自工具返回，不要凭记忆或心算。价格要标数据源。
-- 工具说拿不到，就说拿不到（比如全文不可用、没识别出储量表），不要用别的数字顶替。
+- 工具说拿不到，就说拿不到（全文不可用 / 没识别出储量表 / 低置信度），
+  不要用别的数字顶替，也不要用常识补。
 - 推算值（字段名带 derived）要说明是推算的。
-- 检索不理想时换个说法重试（实测「项目名」比「公司名」更容易命中行业报道）。
-- 用中文回答。
+- **直接用中文给结果**。不要写「我已经收集够了」「下面是简报」这类开场白，
+  更不要用英文过渡句（会出现 "I have enough to build the briefing. Here it is." 这种）。
+  第一行就该是标题或答案本身。
+- 简洁。用户问一个数字就给那个数字和出处，别铺开一大段。
 """
 
 
@@ -81,11 +98,23 @@ def mcp_config() -> dict:
 
 
 def _args_schema(tool) -> type:
-    """从 MCP 工具的 input_schema 生成 pydantic 模型，供 StructuredTool 用。"""
+    """从 MCP 工具的 input_schema 生成 pydantic 模型，供 StructuredTool 用。
+
+    数组类型这里放宽成 `list | str`：实测模型会把它写成 "A,B" 这种字符串，
+    而 pydantic 校验发生在**模型响应解析阶段**（还没进 ToolNode），
+    一旦失败会直接打断整轮对话、连回答都没有。放宽 schema + 在 wrapper 里归一化，
+    比让一次格式小错炸掉整轮划算。这类出入在别的参数上也可能出现，先兜住数组这一类。
+    """
     schema = getattr(tool, "input_schema", None) or {}
     props = schema.get("properties") or {}
     required = set(schema.get("required") or [])
-    types = {"integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
+    types = {
+        "integer": int,
+        "number": float,
+        "boolean": bool,
+        "array": list | str,
+        "object": dict,
+    }
     fields = {
         k: (types.get(v.get("type", "string"), str), ... if k in required else v.get("default"))
         for k, v in props.items()
@@ -98,8 +127,16 @@ def make_tool(client: Client, tool) -> StructuredTool:
 
     闭包持有 client —— 所以 client 必须活到整场对话结束，工具调用时连接还在。
     """
+    props = (getattr(tool, "input_schema", None) or {}).get("properties") or {}
+    array_params = {k for k, v in props.items() if v.get("type") == "array"}
 
     async def call(**kwargs):
+        # 数组参数被写成字符串时补一次归一化，别让它带进 MCP 层
+        for k in array_params:
+            v = kwargs.get(k)
+            if isinstance(v, str):
+                kwargs[k] = [s.strip() for s in v.replace("，", ",").split(",") if s.strip()]
+
         result = await client.call_tool(tool.name, kwargs)
         data = getattr(result, "data", None)
         if data is not None:
@@ -116,10 +153,33 @@ def make_tool(client: Client, tool) -> StructuredTool:
 
 def build_graph(llm: ChatOpenAI, tools: list[StructuredTool]):
     """两个节点：agent（调模型）+ tools（ToolNode 执行工具）。"""
+    from langchain_core.messages import AIMessage, HumanMessage
+
     llm_with_tools = llm.bind_tools(tools)
 
     async def agent_node(state: MessagesState):
-        return {"messages": [await llm_with_tools.ainvoke(state["messages"])]}
+        msgs = state["messages"]
+        try:
+            return {"messages": [await llm_with_tools.ainvoke(msgs)]}
+        except Exception as exc:  # noqa: BLE001
+            # 模型把工具参数写错格式时，报错发生在**响应解析阶段**（还没进 ToolNode），
+            # ToolNode 的 handle_tool_errors 兜不住，整轮会直接死掉、连回答都没有。
+            # 这里加一条纠正提示重试一次；nudge 只用于本次调用，不写回 state。
+            try:
+                nudged = [
+                    *msgs,
+                    HumanMessage(
+                        content=f"你上一次的工具调用参数格式不对（{exc}）。"
+                        "请重新调用同一工具，严格按参数类型传值。"
+                    ),
+                ]
+                return {"messages": [await llm_with_tools.ainvoke(nudged)]}
+            except Exception:
+                return {
+                    "messages": [
+                        AIMessage(content="工具调用参数反复解析失败。请换个说法重问一次。")
+                    ]
+                }
 
     def route(state: MessagesState):
         """模型这一轮调工具了就去 tools，否则收尾。"""

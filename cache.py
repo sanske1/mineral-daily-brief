@@ -396,10 +396,14 @@ CREATE TABLE IF NOT EXISTS articles (
     body          TEXT,                          -- 惰性抓取，未抓时为 NULL
     body_fetched  TEXT,
     first_seen    TEXT NOT NULL,
-    origin        TEXT NOT NULL DEFAULT 'rss'    -- 'rss'=可抓全文 / 'gnews'=仅标题摘要
+    origin        TEXT NOT NULL DEFAULT 'rss',   -- 'rss'=可抓全文 / 'gnews'=仅标题摘要
+    title_key     TEXT                           -- 归一化标题，二次去重用（见 title_key()）
 );
 CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published);
 CREATE INDEX IF NOT EXISTS idx_articles_source ON articles(source);
+-- title_key 的索引**不在这里建**：老库的表已存在但没这一列，
+-- SCHEMA 里的 CREATE INDEX 会先于迁移执行、直接报 no such column。
+-- 统一放到 _migrate() 里，建完列再建索引。
 
 -- FTS 表存归一化后的检索文本，与 articles 用 rowid 对齐（非 external-content，
 -- 因为索引文本与原文不同：中文逐字空格化过）
@@ -428,7 +432,78 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(articles)")}
     if "origin" not in cols:
         conn.execute("ALTER TABLE articles ADD COLUMN origin TEXT NOT NULL DEFAULT 'rss'")
-        conn.commit()
+
+    if "title_key" not in cols:
+        conn.execute("ALTER TABLE articles ADD COLUMN title_key TEXT")
+        _backfill_title_key(conn)
+
+    # 索引统一在这里建：新库（列已在 CREATE TABLE 里）和老库（刚 ALTER 加完）都能覆盖
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_title_key ON articles(title_key)")
+    conn.commit()
+
+
+def _backfill_title_key(conn: sqlite3.Connection) -> None:
+    """给老库补 title_key，并顺手把已有的同标题重复清掉。
+
+    排序决定保留谁：**可抓正文的直连源优先，其次是有正文的，再其次是先入库的**。
+    """
+    rows = conn.execute(
+        "SELECT id, title FROM articles "
+        "ORDER BY (origin='rss') DESC, (body IS NOT NULL) DESC, id ASC"
+    ).fetchall()
+    keep: dict[str, int] = {}
+    drop: list[int] = []
+    for r in rows:
+        k = title_key(r["title"])
+        if not k:
+            continue
+        if k in keep:
+            drop.append(r["id"])
+        else:
+            keep[k] = r["id"]
+            conn.execute("UPDATE articles SET title_key=? WHERE id=?", (k, r["id"]))
+    for aid in drop:
+        conn.execute("DELETE FROM articles_fts WHERE rowid=?", (aid,))
+        conn.execute("DELETE FROM articles WHERE id=?", (aid,))
+
+    # 顺手清掉迁移前就已经进库的垃圾标题（入库过滤只对新来的生效）
+    spam_ids = [
+        r["id"]
+        for r in conn.execute("SELECT id, title FROM articles").fetchall()
+        if is_spam(r["title"])
+    ]
+    for aid in spam_ids:
+        conn.execute("DELETE FROM articles_fts WHERE rowid=?", (aid,))
+        conn.execute("DELETE FROM articles WHERE id=?", (aid,))
+
+    if drop or spam_ids:
+        print(f"  迁移：清理了 {len(drop)} 条同标题重复、{len(spam_ids)} 条垃圾标题")
+
+
+def title_key(title: str) -> str:
+    """归一化标题，用于二次去重。
+
+    为什么光靠 URL 去重不够：同一条报道在 Google News 的中英两路、或媒体 RSS 与聚合源
+    之间，**URL 是不同的**（实测 592 篇里有 22 组同标题重复）。同一篇占掉两个召回名额，
+    会实打实挤掉别的内容。
+
+    归一化只去空白与标点，保留字词本身 —— 免得把 "A - B" 和 "A — B" 判成两条不同的。
+    """
+    return re.sub(r"[^\w一-鿿]+", "", (title or "").lower())
+
+
+# Google News 这类聚合源偶尔会带上 SEO 污染标题（实测出现过「AG捕鱼王电子」前缀
+# 挂在一条真新闻上）。量不大但会污染简报，入库时直接丢掉。
+# 词表宁可短：只放明确属于赌博/推广的，别误伤正常新闻。
+_SPAM_RE = re.compile(
+    r"捕鱼|电子游艺|娱乐城|真人视讯|百家乐|棋牌|彩票|投注|下注|博彩|线上赌|"
+    r"太阳城|新濠|威尼斯人|澳门赌|洗码|包杀|casino|betting site|free spins",
+    re.I,
+)
+
+
+def is_spam(title: str) -> bool:
+    return bool(_SPAM_RE.search(title or ""))
 
 
 def cjk_space(text: str) -> str:
@@ -497,21 +572,40 @@ def upsert_article(
     now: str,
     origin: str = "rss",
 ) -> bool:
-    """写入或更新一篇新闻。返回 True 表示新插入（去重主键：url）。
+    """写入或更新一篇新闻。返回 True 表示新插入。
 
     刻意不用 `INSERT ... ON CONFLICT ... RETURNING (first_seen = excluded.first_seen)` ——
     SQLite 的 RETURNING 子句里访问不到 `excluded` 伪表（会报 no such column）。
     改为先查后写，语义清楚也不会踩这个坑。
+
+    入这道门要过三关：垃圾标题丢弃 → URL 去重 → 标题去重。
     """
+    if is_spam(title):
+        return False  # 赌博/推广污染标题，不进门
+
+    tk = title_key(title)
     existing = conn.execute(
         "SELECT id, title, summary, body FROM articles WHERE url=?", (url,)
     ).fetchone()
 
     if existing is None:
+        if tk:
+            dup = conn.execute(
+                "SELECT id, origin FROM articles WHERE title_key=? LIMIT 1", (tk,)
+            ).fetchone()
+            if dup is not None:
+                # 已有同标题的（只是 URL 不同）。只有「新来的是直连源、旧的不是」才换掉 ——
+                # 直连源能抓正文，聚合源只有标题摘要。
+                if not (origin == "rss" and dup["origin"] != "rss"):
+                    return False
+                conn.execute("DELETE FROM articles_fts WHERE rowid=?", (dup["id"],))
+                conn.execute("DELETE FROM articles WHERE id=?", (dup["id"],))
+
         cur = conn.execute(
-            """INSERT INTO articles(url,title,source,author,category,published,summary,first_seen,origin)
-               VALUES(?,?,?,?,?,?,?,?,?)""",
-            (url, title, source, author, category, published, summary, now, origin),
+            """INSERT INTO articles(url,title,source,author,category,published,summary,
+                                    first_seen,origin,title_key)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (url, title, source, author, category, published, summary, now, origin, tk),
         )
         _reindex(conn, cur.lastrowid)
         return True
@@ -521,10 +615,11 @@ def upsert_article(
     )
     conn.execute(
         """UPDATE articles SET
-             title = ?, summary = COALESCE(?, summary), published = COALESCE(?, published),
+             title = ?, title_key = ?, summary = COALESCE(?, summary),
+             published = COALESCE(?, published),
              category = COALESCE(?, category), author = COALESCE(?, author)
            WHERE id = ?""",
-        (title, summary, published, category, author, existing["id"]),
+        (title, tk, summary, published, category, author, existing["id"]),
     )
     if changed:
         _reindex(conn, existing["id"])
